@@ -1,5 +1,7 @@
 """
-VulnScan Pro — AI-Assisted Vulnerability Assessment Platform
+LACUNA — AI-Assisted Vulnerability Assessment Platform
+The gap in your defences. Found before they find it.
+
 Next-generation scanner: network discovery, CVE intelligence,
 AI-powered risk scoring, attack path modeling, cloud config review.
 
@@ -7,7 +9,7 @@ Requirements:
     pip install streamlit python-nmap requests anthropic plotly networkx
 
 Usage:
-    streamlit run vulnscan_pro.py
+    streamlit run lacuna.py
 
 Environment variable (optional):
     ANTHROPIC_API_KEY=sk-...   pre-fills the API key field
@@ -55,34 +57,40 @@ except ImportError:
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Lacuna",
+    page_title="LACUNA",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Theme: greyscale machine terminal + fluorescent baby blue ──────────────────
+# ── Theme: brushed metal + fluorescent baby blue ───────────────────────────────
+# Palette:
+#   Backgrounds in cool steel greys (#2c2c2e, #363639, #424246) — machined aluminium
+#   Surfaces slightly lighter — anodised panel feel
+#   Borders in visible mid-grey — physical edge between components
+#   Accent: #7df9ff fluorescent baby blue — the single lit element on the chassis
+#   Text in near-white to warm grey — high contrast on metal
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap');
 
 :root {
-    --bg:          #0c0c0e;
-    --bg2:         #111114;
-    --surface:     #17171b;
-    --surface2:    #1e1e24;
-    --border:      #2a2a32;
-    --border2:     #3a3a45;
+    --bg:          #252527;
+    --bg2:         #2c2c2e;
+    --surface:     #323235;
+    --surface2:    #3a3a3d;
+    --border:      #4a4a4e;
+    --border2:     #5e5e63;
     --accent:      #7df9ff;
     --accent-dim:  rgba(125,249,255,0.10);
-    --accent-glow: rgba(125,249,255,0.28);
+    --accent-glow: rgba(125,249,255,0.25);
     --crit:        #e05c5c;
     --warn:        #c8a84b;
     --ok:          #6dba8a;
-    --info:        #7a9fbf;
-    --text:        #d4d4d8;
-    --dim:         #6b6b78;
-    --dim2:        #44444f;
+    --text:        #e8e8ea;
+    --text2:       #b8b8bc;
+    --dim:         #888890;
+    --dim2:        #606068;
     --font-mono:   'IBM Plex Mono', monospace;
     --font-ui:     'IBM Plex Sans Condensed', sans-serif;
 }
@@ -92,17 +100,24 @@ html, body, .stApp {
     color: var(--text) !important;
     font-family: var(--font-ui) !important;
 }
+/* Brushed metal texture: fine horizontal grain + subtle vignette */
 .stApp {
     background-image:
-        linear-gradient(rgba(125,249,255,0.012) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(125,249,255,0.012) 1px, transparent 1px),
-        radial-gradient(ellipse at 15% 5%, #12161c 0%, var(--bg) 55%) !important;
-    background-size: 40px 40px, 40px 40px, 100% 100% !important;
+        repeating-linear-gradient(
+            180deg,
+            transparent,
+            transparent 2px,
+            rgba(255,255,255,0.012) 2px,
+            rgba(255,255,255,0.012) 3px
+        ),
+        radial-gradient(ellipse at 50% 0%, #3a3a3d 0%, #252527 70%) !important;
+    background-size: 100% 100%, 100% 100% !important;
 }
 
 [data-testid="stSidebar"] {
     background: var(--bg2) !important;
     border-right: 1px solid var(--border) !important;
+    box-shadow: inset -4px 0 12px rgba(0,0,0,0.25) !important;
 }
 [data-testid="stSidebar"] * { font-family: var(--font-ui) !important; }
 [data-testid="stSidebarContent"] { padding-top: 1.2rem !important; }
@@ -110,10 +125,10 @@ html, body, .stApp {
 h1 {
     font-family: var(--font-mono) !important;
     font-weight: 600 !important;
-    letter-spacing: 4px !important;
+    letter-spacing: 5px !important;
     text-transform: uppercase !important;
     color: var(--accent) !important;
-    text-shadow: 0 0 20px var(--accent-glow) !important;
+    text-shadow: 0 0 22px var(--accent-glow), 0 1px 0 rgba(0,0,0,0.5) !important;
 }
 h2 {
     font-family: var(--font-ui) !important;
@@ -123,10 +138,11 @@ h2 {
     color: var(--text) !important;
     border-bottom: 1px solid var(--border) !important;
     padding-bottom: 6px !important;
+    text-shadow: 0 1px 0 rgba(0,0,0,0.4) !important;
 }
 h3 {
     font-family: var(--font-mono) !important;
-    font-size: 0.82rem !important;
+    font-size: 0.8rem !important;
     font-weight: 600 !important;
     letter-spacing: 2px !important;
     text-transform: uppercase !important;
@@ -137,24 +153,26 @@ h3 {
 .stNumberInput input,
 .stSelectbox > div > div,
 .stTextArea textarea {
-    background: var(--surface) !important;
+    background: var(--bg) !important;
     border: 1px solid var(--border) !important;
     color: var(--text) !important;
     font-family: var(--font-mono) !important;
     font-size: 0.8rem !important;
     border-radius: 2px !important;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.3) !important;
     transition: border-color 0.15s !important;
 }
 .stTextInput input:focus,
 .stTextArea textarea:focus {
     border-color: var(--accent) !important;
-    box-shadow: 0 0 0 2px var(--accent-dim) !important;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.3), 0 0 0 2px var(--accent-dim) !important;
     outline: none !important;
 }
 
 .stButton > button {
-    background: transparent !important;
-    border: 1px solid var(--accent) !important;
+    background: linear-gradient(180deg, var(--surface2) 0%, var(--surface) 100%) !important;
+    border: 1px solid var(--border2) !important;
+    border-bottom: 1px solid var(--border) !important;
     color: var(--accent) !important;
     font-family: var(--font-mono) !important;
     font-size: 0.75rem !important;
@@ -162,16 +180,19 @@ h3 {
     letter-spacing: 3px !important;
     text-transform: uppercase !important;
     border-radius: 2px !important;
-    transition: background 0.15s, box-shadow 0.15s !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06) !important;
+    transition: all 0.15s !important;
     padding: 10px 20px !important;
 }
 .stButton > button:hover {
-    background: var(--accent-dim) !important;
-    box-shadow: 0 0 14px var(--accent-glow) !important;
+    background: linear-gradient(180deg, #424246 0%, #3a3a3d 100%) !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 12px var(--accent-glow) !important;
 }
 .stButton > button:active {
-    background: var(--accent) !important;
-    color: var(--bg) !important;
+    background: var(--bg) !important;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.4) !important;
+    color: var(--accent) !important;
 }
 
 [data-testid="stCheckbox"] label {
@@ -181,14 +202,16 @@ h3 {
 }
 
 [data-testid="stMetric"] {
-    background: var(--surface) !important;
+    background: linear-gradient(160deg, var(--surface2) 0%, var(--surface) 100%) !important;
     border: 1px solid var(--border) !important;
-    border-radius: 2px !important;
+    border-top: 1px solid var(--border2) !important;
+    border-radius: 3px !important;
     padding: 14px 12px !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05) !important;
 }
 [data-testid="stMetricLabel"] {
     font-family: var(--font-mono) !important;
-    font-size: 0.65rem !important;
+    font-size: 0.62rem !important;
     letter-spacing: 2px !important;
     text-transform: uppercase !important;
     color: var(--dim) !important;
@@ -197,7 +220,7 @@ h3 {
     font-family: var(--font-mono) !important;
     color: var(--accent) !important;
     font-size: 1.55rem !important;
-    text-shadow: 0 0 10px var(--accent-glow) !important;
+    text-shadow: 0 0 12px var(--accent-glow) !important;
 }
 
 [data-testid="stExpander"] {
@@ -205,27 +228,29 @@ h3 {
     border-radius: 2px !important;
     background: var(--surface) !important;
     margin-bottom: 4px !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.25) !important;
 }
 [data-testid="stExpander"] summary {
     font-family: var(--font-mono) !important;
     font-size: 0.78rem !important;
     letter-spacing: 1px !important;
-    color: var(--text) !important;
-    background: var(--surface) !important;
+    color: var(--text2) !important;
+    background: linear-gradient(180deg, var(--surface2) 0%, var(--surface) 100%) !important;
 }
 [data-testid="stExpander"] summary:hover { color: var(--accent) !important; }
 
 code, pre {
     font-family: var(--font-mono) !important;
-    background: var(--bg) !important;
+    background: var(--bg2) !important;
     color: var(--accent) !important;
     border: 1px solid var(--border) !important;
     border-radius: 2px !important;
     font-size: 0.78rem !important;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.3) !important;
 }
 
 .stTabs [data-baseweb="tab-list"] {
-    background: var(--surface) !important;
+    background: var(--bg2) !important;
     border-bottom: 1px solid var(--border) !important;
     gap: 0 !important;
 }
@@ -252,16 +277,22 @@ code, pre {
     background: linear-gradient(90deg, var(--accent), #b0feff) !important;
     box-shadow: 0 0 8px var(--accent-glow) !important;
 }
+[data-testid="stProgressBar"] {
+    background: var(--bg) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.3) !important;
+}
 
-.stSuccess { background: rgba(109,186,138,0.07) !important; border-left: 2px solid var(--ok) !important;   border-radius: 2px !important; }
-.stWarning { background: rgba(200,168,75,0.07) !important;  border-left: 2px solid var(--warn) !important;  border-radius: 2px !important; }
-.stError   { background: rgba(224,92,92,0.07) !important;   border-left: 2px solid var(--crit) !important;  border-radius: 2px !important; }
+.stSuccess { background: rgba(109,186,138,0.08) !important; border-left: 2px solid var(--ok) !important;   border-radius: 2px !important; }
+.stWarning { background: rgba(200,168,75,0.08) !important;  border-left: 2px solid var(--warn) !important;  border-radius: 2px !important; }
+.stError   { background: rgba(224,92,92,0.08) !important;   border-left: 2px solid var(--crit) !important;  border-radius: 2px !important; }
 .stInfo    { background: var(--accent-dim) !important;       border-left: 2px solid var(--accent) !important; border-radius: 2px !important; }
 
 hr { border-color: var(--border) !important; margin: 10px 0 !important; }
 
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-track { background: var(--bg2); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 </style>
@@ -274,7 +305,7 @@ SEVERITY_COLORS = {
     "HIGH":     "#c87a3a",
     "MEDIUM":   "#c8a84b",
     "LOW":      "#7df9ff",
-    "INFO":     "#44444f",
+    "INFO":     "#606068",
 }
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -393,8 +424,8 @@ def log(msg: str) -> None:
 
 
 def severity_badge(sev: str) -> str:
-    c      = SEVERITY_COLORS.get(sev, "#44444f")
-    text_c = "#0c0c0e" if sev == "LOW" else "#f0f0f0"
+    c      = SEVERITY_COLORS.get(sev, "#606068")
+    text_c = "#252527" if sev == "LOW" else "#f0f0f0"
     return (
         f'<span style="background:{c};color:{text_c};padding:1px 7px;'
         f'border-radius:2px;font-size:0.66rem;font-weight:600;'
@@ -558,7 +589,7 @@ def fetch_nvd_cve(cve_id: str) -> dict:
         return {}
     try:
         url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
-        r = requests.get(url, timeout=6, headers={"User-Agent": "VulnScanPro/2.0"})
+        r = requests.get(url, timeout=6, headers={"User-Agent": "Lacuna/2.0"})
         if r.status_code == 200:
             data  = r.json()
             vulns = data.get("vulnerabilities", [])
@@ -726,9 +757,9 @@ Be concise, specific, and actionable. Do not pad with generic advice."""
 # ── Plotly charts ──────────────────────────────────────────────────────────────
 
 _BG      = "rgba(0,0,0,0)"
-_GRID    = "#2a2a32"
-_TEXT    = "#d4d4d8"
-_DIM     = "#6b6b78"
+_GRID    = "#4a4a4e"
+_TEXT    = "#e8e8ea"
+_DIM     = "#888890"
 _MONO    = "IBM Plex Mono"
 
 
@@ -752,7 +783,7 @@ def render_severity_donut(findings_by_sev: dict) -> None:
 
     fig = go.Figure(go.Pie(
         labels=labels, values=values, hole=0.68,
-        marker=dict(colors=colors, line=dict(color="#0c0c0e", width=2)),
+        marker=dict(colors=colors, line=dict(color="#252527", width=2)),
         textinfo="label+value",
         textfont=dict(family=_MONO, size=10, color=_TEXT),
         hovertemplate="<b>%{label}</b><br>Count: %{value}<br>%{percent}<extra></extra>",
@@ -776,7 +807,7 @@ def render_cvss_bar(vulns: list) -> None:
 
     fig = go.Figure(go.Bar(
         x=scores, y=cve_ids, orientation="h",
-        marker=dict(color=colors, line=dict(color="#0c0c0e", width=1)),
+        marker=dict(color=colors, line=dict(color="#252527", width=1)),
         text=[f"{s:.1f}" for s in scores],
         textposition="outside",
         textfont=dict(color=_TEXT, family=_MONO, size=9),
@@ -808,14 +839,14 @@ def render_risk_gauge(score: int) -> None:
             "axis":       {"range": [0, 100], "tickcolor": _DIM,
                            "tickfont": {"family": _MONO, "size": 8}},
             "bar":        {"color": color, "thickness": 0.22},
-            "bgcolor":    "#17171b",
+            "bgcolor":    "#2c2c2e",
             "borderwidth":1,
             "bordercolor":_GRID,
             "steps": [
-                {"range": [0,  25],  "color": "#111114"},
-                {"range": [25, 50],  "color": "#141416"},
-                {"range": [50, 75],  "color": "#161618"},
-                {"range": [75, 100], "color": "#18161a"},
+                {"range": [0,  25],  "color": "#2a2a2c"},
+                {"range": [25, 50],  "color": "#2e2e30"},
+                {"range": [50, 75],  "color": "#323234"},
+                {"range": [75, 100], "color": "#363638"},
             ],
             "threshold": {"line": {"color": color, "width": 2},
                           "thickness": 0.8, "value": score},
@@ -854,7 +885,7 @@ def render_attack_path_graph(path: dict) -> None:
             x=[xs[i]], y=[0],
             mode="markers+text",
             marker=dict(size=18, color=c, symbol="square",
-                        line=dict(color="#0c0c0e", width=2)),
+                        line=dict(color="#252527", width=2)),
             text=[step["node"]],
             textposition="bottom center",
             textfont=dict(family=_MONO, size=8, color=_TEXT),
@@ -876,9 +907,9 @@ with st.sidebar:
         '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;'
         'font-weight:600;letter-spacing:4px;color:#7df9ff;'
         'text-shadow:0 0 14px rgba(125,249,255,0.38);margin:0 0 2px">'
-        'VULNSCAN PRO</p>'
+        'LACUNA</p>'
         '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.6rem;'
-        'letter-spacing:2px;color:#44444f;margin:0 0 12px">v2.0  AI-ASSISTED  ASSESSMENT</p>',
+        'letter-spacing:2px;color:#606068;margin:0 0 12px">v2.0  AI-ASSISTED  ASSESSMENT</p>',
         unsafe_allow_html=True,
     )
     st.divider()
@@ -945,9 +976,9 @@ with st.sidebar:
 # ── Header ─────────────────────────────────────────────────────────────────────
 
 st.markdown(
-    '<h1 style="margin-bottom:0">VULNSCAN PRO</h1>'
+    '<h1 style="margin-bottom:0">LACUNA</h1>'
     '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
-    'letter-spacing:3px;color:#44444f;margin-top:2px">'
+    'letter-spacing:3px;color:#606068;margin-top:2px">'
     'AI-ASSISTED VULNERABILITY ASSESSMENT  //  NETWORK  CLOUD  CVE  ATTACK-PATH  AI-SCORING'
     '</p>',
     unsafe_allow_html=True,
@@ -1093,15 +1124,15 @@ if st.session_state.scan_results:
                             break
                     ref_html = (
                         f' <a href="{nvd_ref}" target="_blank" '
-                        f'style="color:#44444f;font-size:0.68rem;text-decoration:none">NVD</a>'
+                        f'style="color:#606068;font-size:0.68rem;text-decoration:none">NVD</a>'
                         if nvd_ref else ""
                     )
                     st.markdown(
                         f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.76rem;'
-                        f'padding:3px 0;border-bottom:1px solid #1e1e24">'
+                        f'padding:3px 0;border-bottom:1px solid #3a3a3d">'
                         f'<span style="color:#7df9ff;display:inline-block;width:50px">{port}</span>'
                         f'<span style="color:#6dba8a;display:inline-block;width:138px">{pd["service"]}</span>'
-                        f'<span style="color:#6b6b78;display:inline-block;width:255px">{pd["version"]}</span>'
+                        f'<span style="color:#888890;display:inline-block;width:255px">{pd["version"]}</span>'
                         f'{badges}{ref_html}</div>',
                         unsafe_allow_html=True,
                     )
@@ -1123,9 +1154,9 @@ if st.session_state.scan_results:
         st.markdown("##### Findings")
         st.markdown(
             '<div style="display:grid;grid-template-columns:180px 90px 58px 1fr;'
-            'gap:8px;padding:4px 8px;border-bottom:1px solid #2a2a32;'
+            'gap:8px;padding:4px 8px;border-bottom:1px solid #4a4a4e;'
             'font-family:\'IBM Plex Mono\',monospace;font-size:0.62rem;'
-            'letter-spacing:1px;color:#44444f">'
+            'letter-spacing:1px;color:#606068">'
             '<span>CVE ID</span><span>SEVERITY</span><span>CVSS</span><span>DESCRIPTION</span></div>',
             unsafe_allow_html=True,
         )
@@ -1136,12 +1167,12 @@ if st.session_state.scan_results:
             sc       = cvss_color(score)
             st.markdown(
                 f'<div style="display:grid;grid-template-columns:180px 90px 58px 1fr;'
-                f'gap:8px;padding:5px 8px;border-bottom:1px solid #1e1e24;'
+                f'gap:8px;padding:5px 8px;border-bottom:1px solid #3a3a3d;'
                 f'font-family:\'IBM Plex Mono\',monospace;font-size:0.74rem">'
                 f'<span style="color:#7df9ff">{v["cve"]}</span>'
                 f'<span>{severity_badge(v["severity"])}</span>'
                 f'<span style="color:{sc};font-weight:600">{score:.1f}</span>'
-                f'<span style="color:#6b6b78">{desc[:135]}{"..." if len(desc)>135 else ""}</span>'
+                f'<span style="color:#888890">{desc[:135]}{"..." if len(desc)>135 else ""}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1158,20 +1189,20 @@ if st.session_state.scan_results:
             )
             st.markdown(
                 '<div style="display:grid;grid-template-columns:230px 86px 1fr 1fr;'
-                'gap:8px;padding:4px 8px;border-bottom:1px solid #2a2a32;'
+                'gap:8px;padding:4px 8px;border-bottom:1px solid #4a4a4e;'
                 'font-family:\'IBM Plex Mono\',monospace;font-size:0.62rem;'
-                'letter-spacing:1px;color:#44444f">'
+                'letter-spacing:1px;color:#606068">'
                 '<span>CHECK</span><span>RISK</span><span>DESCRIPTION</span><span>REMEDIATION</span></div>',
                 unsafe_allow_html=True,
             )
             for cf in ordered_clouds:
                 st.markdown(
                     f'<div style="display:grid;grid-template-columns:230px 86px 1fr 1fr;'
-                    f'gap:8px;padding:6px 8px;border-bottom:1px solid #1e1e24;'
+                    f'gap:8px;padding:6px 8px;border-bottom:1px solid #3a3a3d;'
                     f'font-family:\'IBM Plex Mono\',monospace;font-size:0.74rem">'
-                    f'<span style="color:#d4d4d8;font-weight:600">{cf["check"]}</span>'
+                    f'<span style="color:#e8e8ea;font-weight:600">{cf["check"]}</span>'
                     f'<span>{severity_badge(cf["risk"])}</span>'
-                    f'<span style="color:#6b6b78">{cf["desc"]}</span>'
+                    f'<span style="color:#888890">{cf["desc"]}</span>'
                     f'<span style="color:#6dba8a;font-size:0.68rem">{cf["remediation"]}</span>'
                     f'</div>',
                     unsafe_allow_html=True,
@@ -1185,7 +1216,7 @@ if st.session_state.scan_results:
         else:
             st.markdown(
                 f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
-                f'color:#6b6b78">{len(paths)} attack chain(s) modelled — '
+                f'color:#888890">{len(paths)} attack chain(s) modelled — '
                 f'public internet to target asset.</p>',
                 unsafe_allow_html=True,
             )
@@ -1207,10 +1238,10 @@ if st.session_state.scan_results:
                     for i, step in enumerate(path["steps"]):
                         st.markdown(
                             f'<p style="font-family:\'IBM Plex Mono\',monospace;'
-                            f'font-size:0.76rem;color:#d4d4d8;margin:2px 0">'
-                            f'<span style="color:#44444f">{i+1}.</span>  '
+                            f'font-size:0.76rem;color:#e8e8ea;margin:2px 0">'
+                            f'<span style="color:#606068">{i+1}.</span>  '
                             f'<span style="color:#7df9ff">{step["node"]}</span>  '
-                            f'<span style="color:#6b6b78">— {step["label"]}</span></p>',
+                            f'<span style="color:#888890">— {step["label"]}</span></p>',
                             unsafe_allow_html=True,
                         )
 
@@ -1235,16 +1266,19 @@ if st.session_state.scan_results:
 # ── Welcome screen ─────────────────────────────────────────────────────────────
 else:
     st.markdown(
-        '<div style="border:1px solid #2a2a32;border-radius:2px;'
-        'padding:48px 40px;margin-top:16px;background:#111114;text-align:center">'
+        '<div style="border:1px solid #4a4a4e;border-top:1px solid #5e5e63;border-radius:2px;'
+        'padding:48px 40px;margin-top:16px;'
+        'background:linear-gradient(160deg,#363639 0%,#2c2c2e 100%);'
+        'box-shadow:0 4px 16px rgba(0,0,0,0.35),inset 0 1px 0 rgba(255,255,255,0.06);'
+        'text-align:center">'
         '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.6rem;'
-        'letter-spacing:4px;color:#44444f;margin:0 0 8px">STATUS</p>'
+        'letter-spacing:4px;color:#606068;margin:0 0 8px">STATUS</p>'
         '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:1.35rem;'
         'letter-spacing:6px;color:#7df9ff;'
         'text-shadow:0 0 18px rgba(125,249,255,0.32);margin:0 0 16px;font-weight:600">'
         'READY TO SCAN</p>'
         '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
-        'letter-spacing:1px;color:#6b6b78;max-width:480px;margin:0 auto;line-height:1.8">'
+        'letter-spacing:1px;color:#888890;max-width:480px;margin:0 auto;line-height:1.8">'
         'Configure target and modules in the sidebar.<br>'
         'Press LAUNCH SCAN to begin assessment.<br><br>'
         'Network discovery  //  CVE intelligence  //  Cloud audit<br>'
@@ -1277,12 +1311,14 @@ else:
     for i, (title, desc) in enumerate(features):
         with cols[i % 3]:
             st.markdown(
-                f'<div style="background:#17171b;border:1px solid #2a2a32;'
-                f'border-radius:2px;padding:16px;margin-top:12px">'
+                f'<div style="background:linear-gradient(160deg,#3a3a3d 0%,#323235 100%);'
+                f'border:1px solid #4a4a4e;border-top:1px solid #5e5e63;'
+                f'border-radius:2px;padding:16px;margin-top:12px;'
+                f'box-shadow:0 2px 8px rgba(0,0,0,0.28),inset 0 1px 0 rgba(255,255,255,0.05)">'
                 f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
                 f'font-weight:600;letter-spacing:2px;color:#7df9ff;margin:0 0 6px">{title}</p>'
                 f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
-                f'color:#6b6b78;line-height:1.65;margin:0">{desc}</p>'
+                f'color:#888890;line-height:1.65;margin:0">{desc}</p>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
