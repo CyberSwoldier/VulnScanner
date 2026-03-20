@@ -55,7 +55,7 @@ except ImportError:
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="VulnScan Pro",
+    page_title="Lacuna",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
