@@ -1,1711 +1,1288 @@
-#!/usr/bin/env python3
 """
-Advanced Network and Station Vulnerability Scanner
-A professional-grade security assessment tool for local systems and networks
+VulnScan Pro — AI-Assisted Vulnerability Assessment Platform
+Next-generation scanner: network discovery, CVE intelligence,
+AI-powered risk scoring, attack path modeling, cloud config review.
 
-Author: Security Assessment Team
-Version: 2.0
-License: MIT
+Requirements:
+    pip install streamlit python-nmap requests anthropic plotly networkx
 
-This tool performs comprehensive security scans on:
-- Local system (workstation/server)
-- Network infrastructure
-- Remote hosts on the same network
+Usage:
+    streamlit run vulnscan_pro.py
+
+Environment variable (optional):
+    ANTHROPIC_API_KEY=sk-...   pre-fills the API key field
 """
 
-import socket
-import subprocess
-import platform
-import os
-import sys
+import streamlit as st
 import json
-import re
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Optional, Tuple, Any
-import ipaddress
-import threading
 import time
+import random
+import ipaddress
+from datetime import datetime
+from collections import defaultdict
+import os
 
-# ==================== CONSTANTS ====================
+# ── Optional imports (graceful degradation) ───────────────────────────────────
+try:
+    import nmap
+    NMAP_AVAILABLE = True
+except ImportError:
+    NMAP_AVAILABLE = False
 
-class Colors:
-    """ANSI color codes for enhanced terminal output"""
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
 
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
 
-class ScanMode:
-    """Enumeration for scan modes"""
-    LOCAL_ONLY = "1"
-    NETWORK_ONLY = "2"
-    FULL_SCAN = "3"
-    QUICK_SCAN = "4"
+try:
+    import networkx as nx          # noqa: F401 reserved for future graph export
+    NX_AVAILABLE = True
+except ImportError:
+    NX_AVAILABLE = False
 
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
-# Common ports to scan
-COMMON_PORTS = {
-    21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP', 53: 'DNS',
-    80: 'HTTP', 110: 'POP3', 135: 'RPC', 139: 'NetBIOS', 143: 'IMAP',
-    443: 'HTTPS', 445: 'SMB', 1433: 'MSSQL', 3306: 'MySQL', 3389: 'RDP',
-    5432: 'PostgreSQL', 5900: 'VNC', 6379: 'Redis', 8080: 'HTTP-Alt',
-    8443: 'HTTPS-Alt', 27017: 'MongoDB', 5000: 'Flask/Docker'
+# ── Page config ────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="VulnScan Pro",
+    page_icon=None,
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Theme: greyscale machine terminal + fluorescent baby blue ──────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@400;600;700&display=swap');
+
+:root {
+    --bg:          #0c0c0e;
+    --bg2:         #111114;
+    --surface:     #17171b;
+    --surface2:    #1e1e24;
+    --border:      #2a2a32;
+    --border2:     #3a3a45;
+    --accent:      #7df9ff;
+    --accent-dim:  rgba(125,249,255,0.10);
+    --accent-glow: rgba(125,249,255,0.28);
+    --crit:        #e05c5c;
+    --warn:        #c8a84b;
+    --ok:          #6dba8a;
+    --info:        #7a9fbf;
+    --text:        #d4d4d8;
+    --dim:         #6b6b78;
+    --dim2:        #44444f;
+    --font-mono:   'IBM Plex Mono', monospace;
+    --font-ui:     'IBM Plex Sans Condensed', sans-serif;
 }
 
-# Risky services that should trigger alerts
-RISKY_SERVICES = {
-    23: ('Telnet', 'CRITICAL', 'Transmits credentials in cleartext'),
-    21: ('FTP', 'HIGH', 'Unencrypted file transfer protocol'),
-    69: ('TFTP', 'HIGH', 'Trivial FTP with no authentication'),
-    135: ('RPC', 'HIGH', 'Windows RPC can be exploited'),
-    3389: ('RDP', 'HIGH', 'Remote Desktop exposed to brute force'),
-    5900: ('VNC', 'HIGH', 'Often has weak or no authentication'),
+html, body, .stApp {
+    background-color: var(--bg) !important;
+    color: var(--text) !important;
+    font-family: var(--font-ui) !important;
+}
+.stApp {
+    background-image:
+        linear-gradient(rgba(125,249,255,0.012) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(125,249,255,0.012) 1px, transparent 1px),
+        radial-gradient(ellipse at 15% 5%, #12161c 0%, var(--bg) 55%) !important;
+    background-size: 40px 40px, 40px 40px, 100% 100% !important;
 }
 
-# ==================== UTILITY FUNCTIONS ====================
+[data-testid="stSidebar"] {
+    background: var(--bg2) !important;
+    border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] * { font-family: var(--font-ui) !important; }
+[data-testid="stSidebarContent"] { padding-top: 1.2rem !important; }
 
-def clear_screen():
-    """Clear terminal screen based on OS"""
-    os.system('cls' if platform.system() == 'Windows' else 'clear')
+h1 {
+    font-family: var(--font-mono) !important;
+    font-weight: 600 !important;
+    letter-spacing: 4px !important;
+    text-transform: uppercase !important;
+    color: var(--accent) !important;
+    text-shadow: 0 0 20px var(--accent-glow) !important;
+}
+h2 {
+    font-family: var(--font-ui) !important;
+    font-weight: 700 !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    color: var(--text) !important;
+    border-bottom: 1px solid var(--border) !important;
+    padding-bottom: 6px !important;
+}
+h3 {
+    font-family: var(--font-mono) !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    color: var(--accent) !important;
+}
 
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox > div > div,
+.stTextArea textarea {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.8rem !important;
+    border-radius: 2px !important;
+    transition: border-color 0.15s !important;
+}
+.stTextInput input:focus,
+.stTextArea textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px var(--accent-dim) !important;
+    outline: none !important;
+}
 
-def print_separator(char='=', length=70):
-    """Print a separator line"""
-    print(f"{Colors.CYAN}{char * length}{Colors.ENDC}")
+.stButton > button {
+    background: transparent !important;
+    border: 1px solid var(--accent) !important;
+    color: var(--accent) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 3px !important;
+    text-transform: uppercase !important;
+    border-radius: 2px !important;
+    transition: background 0.15s, box-shadow 0.15s !important;
+    padding: 10px 20px !important;
+}
+.stButton > button:hover {
+    background: var(--accent-dim) !important;
+    box-shadow: 0 0 14px var(--accent-glow) !important;
+}
+.stButton > button:active {
+    background: var(--accent) !important;
+    color: var(--bg) !important;
+}
 
+[data-testid="stCheckbox"] label {
+    font-family: var(--font-mono) !important;
+    font-size: 0.78rem !important;
+    color: var(--dim) !important;
+}
 
-def get_timestamp() -> str:
-    """Get formatted timestamp"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+[data-testid="stMetric"] {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    padding: 14px 12px !important;
+}
+[data-testid="stMetricLabel"] {
+    font-family: var(--font-mono) !important;
+    font-size: 0.65rem !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    color: var(--dim) !important;
+}
+[data-testid="stMetricValue"] {
+    font-family: var(--font-mono) !important;
+    color: var(--accent) !important;
+    font-size: 1.55rem !important;
+    text-shadow: 0 0 10px var(--accent-glow) !important;
+}
 
+[data-testid="stExpander"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    background: var(--surface) !important;
+    margin-bottom: 4px !important;
+}
+[data-testid="stExpander"] summary {
+    font-family: var(--font-mono) !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 1px !important;
+    color: var(--text) !important;
+    background: var(--surface) !important;
+}
+[data-testid="stExpander"] summary:hover { color: var(--accent) !important; }
 
-def is_root() -> bool:
-    """Check if running with elevated privileges"""
-    try:
-        return os.geteuid() == 0
-    except AttributeError:
-        # Windows
-        import ctypes
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
-        except:
-            return False
+code, pre {
+    font-family: var(--font-mono) !important;
+    background: var(--bg) !important;
+    color: var(--accent) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 2px !important;
+    font-size: 0.78rem !important;
+}
 
+.stTabs [data-baseweb="tab-list"] {
+    background: var(--surface) !important;
+    border-bottom: 1px solid var(--border) !important;
+    gap: 0 !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-family: var(--font-mono) !important;
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    color: var(--dim) !important;
+    border-bottom: 2px solid transparent !important;
+    padding: 10px 16px !important;
+    transition: color 0.15s !important;
+}
+.stTabs [aria-selected="true"] {
+    color: var(--accent) !important;
+    border-bottom-color: var(--accent) !important;
+    background: transparent !important;
+    text-shadow: 0 0 8px var(--accent-glow) !important;
+}
+.stTabs [data-baseweb="tab"]:hover { color: var(--text) !important; }
 
-# ==================== MAIN SCANNER CLASS ====================
+.stProgress > div > div {
+    background: linear-gradient(90deg, var(--accent), #b0feff) !important;
+    box-shadow: 0 0 8px var(--accent-glow) !important;
+}
 
-class VulnerabilityScanner:
-    """
-    Main vulnerability scanner class
-    Performs comprehensive security assessments on local and network systems
-    """
-    
-    def __init__(self, scan_mode: str, verbose: bool = False, threads: int = 50):
-        """
-        Initialize the vulnerability scanner
-        
-        Args:
-            scan_mode: Type of scan to perform
-            verbose: Enable verbose output
-            threads: Number of concurrent threads for network scanning
-        """
-        self.scan_mode = scan_mode
-        self.verbose = verbose
-        self.threads = threads
-        self.system = platform.system()
-        self.lock = threading.Lock()
-        
-        # Results storage
-        self.results = {
-            'scan_time': datetime.now().isoformat(),
-            'scan_mode': self._get_scan_mode_name(),
-            'scanner_version': '2.0',
-            'local_system': {},
-            'network_hosts': [],
-            'vulnerabilities': [],
-            'summary': {}
-        }
-        
-        # Statistics
-        self.stats = {
-            'ports_scanned': 0,
-            'hosts_scanned': 0,
-            'vulnerabilities_found': 0
-        }
-    
-    def _get_scan_mode_name(self) -> str:
-        """Get human-readable scan mode name"""
-        modes = {
-            ScanMode.LOCAL_ONLY: "Local System Only",
-            ScanMode.NETWORK_ONLY: "Network Only",
-            ScanMode.FULL_SCAN: "Full Scan (Local + Network)",
-            ScanMode.QUICK_SCAN: "Quick Scan"
-        }
-        return modes.get(self.scan_mode, "Unknown")
-    
-    def log(self, message: str, level: str = "INFO"):
-        """
-        Log messages with color coding and timestamps
-        
-        Args:
-            message: Message to log
-            level: Log level (INFO, SUCCESS, WARNING, ERROR, CRITICAL)
-        """
-        colors = {
-            "INFO": Colors.BLUE,
-            "SUCCESS": Colors.GREEN,
-            "WARNING": Colors.YELLOW,
-            "ERROR": Colors.RED,
-            "CRITICAL": Colors.RED + Colors.BOLD
-        }
-        
-        if level in ["WARNING", "ERROR", "CRITICAL"] or self.verbose:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            color = colors.get(level, '')
-            print(f"{color}[{timestamp}] [{level}]{Colors.ENDC} {message}")
-    
-    def add_vulnerability(
-        self,
-        category: str,
-        severity: str,
-        title: str,
-        description: str,
-        host: str = "local",
-        recommendation: str = "",
-        cve: str = ""
-    ):
-        """
-        Add a vulnerability finding to results
-        
-        Args:
-            category: Vulnerability category
-            severity: CRITICAL, HIGH, MEDIUM, LOW, INFO
-            title: Short title
-            description: Detailed description
-            host: Affected host (default: "local")
-            recommendation: Remediation recommendation
-            cve: Related CVE identifier if applicable
-        """
-        vuln = {
-            'host': host,
-            'category': category,
-            'severity': severity,
-            'title': title,
-            'description': description,
-            'recommendation': recommendation,
-            'cve': cve,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        with self.lock:
-            self.results['vulnerabilities'].append(vuln)
-            self.stats['vulnerabilities_found'] += 1
-        
-        # Color-coded severity display
-        severity_colors = {
-            'CRITICAL': Colors.RED + Colors.BOLD,
-            'HIGH': Colors.RED,
-            'MEDIUM': Colors.YELLOW,
-            'LOW': Colors.CYAN,
-            'INFO': Colors.BLUE
-        }
-        
-        color = severity_colors.get(severity, '')
-        log_level = "CRITICAL" if severity == "CRITICAL" else "WARNING"
-        self.log(f"{color}[{severity}] {title}{Colors.ENDC} ({host})", log_level)
-    
-    # ==================== LOCAL SYSTEM CHECKS ====================
-    
-    def check_local_system(self):
-        """Perform comprehensive local system security assessment"""
-        self.log("Initiating local system vulnerability scan...", "INFO")
-        
-        hostname = socket.gethostname()
-        try:
-            local_ip = socket.gethostbyname(hostname)
-        except:
-            local_ip = "Unknown"
-        
-        self.results['local_system'] = {
-            'hostname': hostname,
-            'local_ip': local_ip,
-            'platform': platform.platform(),
-            'system': self.system,
-            'architecture': platform.machine(),
-            'processor': platform.processor(),
-            'python_version': platform.python_version(),
-        }
-        
-        # Execute all security checks
-        security_checks = [
-            ('OS Version', self.check_os_version),
-            ('Open Ports', self.check_open_ports),
-            ('Firewall Status', self.check_firewall_status),
-            ('User Accounts', self.check_user_accounts),
-            ('Password Policy', self.check_password_policy),
-            ('Running Services', self.check_running_services),
-            ('File Permissions', self.check_file_permissions),
-            ('SSH Configuration', self.check_ssh_config),
-            ('Security Software', self.check_antivirus),
-            ('Disk Encryption', self.check_disk_encryption),
-            ('Network Shares', self.check_network_shares),
-            ('Installed Software', self.check_installed_software),
-            ('Weak Protocols', self.check_weak_protocols),
-            ('System Hardening', self.check_system_hardening),
-        ]
-        
-        for check_name, check_func in security_checks:
-            try:
-                if self.verbose:
-                    self.log(f"Running check: {check_name}", "INFO")
-                check_func()
-            except Exception as e:
-                self.log(f"Error in {check_name}: {str(e)}", "ERROR")
-        
-        self.log("Local system scan completed", "SUCCESS")
-    
-    def check_os_version(self):
-        """Check operating system version and update status"""
-        try:
-            if self.system == "Linux":
-                kernel = platform.release()
-                self.results['local_system']['kernel'] = kernel
-                
-                # Check for available updates (apt-based systems)
-                if os.path.exists('/usr/bin/apt'):
-                    try:
-                        result = subprocess.run(
-                            ['apt', 'list', '--upgradable'],
-                            capture_output=True,
-                            text=True,
-                            timeout=15
-                        )
-                        updates = [
-                            line for line in result.stdout.split('\n')
-                            if '/' in line and 'upgradable' in line.lower()
-                        ]
-                        
-                        if len(updates) > 10:
-                            self.add_vulnerability(
-                                'System Updates',
-                                'MEDIUM',
-                                f'{len(updates)} package updates available',
-                                f'System has {len(updates)} outdated packages that may contain security vulnerabilities',
-                                recommendation='Update system: sudo apt update && sudo apt upgrade'
-                            )
-                        elif len(updates) > 0:
-                            self.log(f"{len(updates)} updates available", "INFO")
-                            
-                    except subprocess.TimeoutExpired:
-                        self.log("Package update check timed out", "WARNING")
-                    except Exception as e:
-                        if self.verbose:
-                            self.log(f"Could not check updates: {e}", "ERROR")
-                
-                # Check for RedHat/CentOS
-                elif os.path.exists('/usr/bin/yum'):
-                    try:
-                        result = subprocess.run(
-                            ['yum', 'check-update'],
-                            capture_output=True,
-                            text=True,
-                            timeout=15
-                        )
-                        if result.returncode == 100:  # Updates available
-                            self.add_vulnerability(
-                                'System Updates',
-                                'MEDIUM',
-                                'Package updates available',
-                                'System packages need updating',
-                                recommendation='Update system: sudo yum update'
-                            )
-                    except:
-                        pass
-                        
-            elif self.system == "Windows":
-                version = platform.version()
-                self.results['local_system']['windows_version'] = version
-                
-            elif self.system == "Darwin":
-                version = platform.mac_ver()[0]
-                self.results['local_system']['macos_version'] = version
-                
-        except Exception as e:
-            self.log(f"Error checking OS version: {e}", "ERROR")
-    
-    def check_open_ports(self):
-        """Scan for open ports on localhost"""
-        self.log("Scanning local ports...", "INFO")
-        open_ports = []
-        
-        for port, service in COMMON_PORTS.items():
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.3)
-                    result = sock.connect_ex(('127.0.0.1', port))
-                    
-                    if result == 0:
-                        open_ports.append({'port': port, 'service': service})
-                        self.stats['ports_scanned'] += 1
-                        
-                        # Check if it's a risky service
-                        if port in RISKY_SERVICES:
-                            service_name, severity, risk_desc = RISKY_SERVICES[port]
-                            self.add_vulnerability(
-                                'Open Ports',
-                                severity,
-                                f'{service_name} (port {port}) is open',
-                                f'{risk_desc}. Port {port} is accessible on localhost.',
-                                recommendation=f'Disable {service_name} if not required, or restrict access'
-                            )
-                        elif port in [3306, 5432, 27017, 6379]:  # Database ports
-                            self.add_vulnerability(
-                                'Open Ports',
-                                'MEDIUM',
-                                f'{service} (port {port}) is open',
-                                f'Database service exposed on localhost. Should only accept connections from trusted sources.',
-                                recommendation=f'Configure {service} to bind only to localhost or use authentication'
-                            )
-                            
-            except Exception as e:
-                if self.verbose:
-                    self.log(f"Error checking port {port}: {e}", "ERROR")
-        
-        self.results['local_system']['open_ports'] = open_ports
-        self.log(f"Found {len(open_ports)} open ports", "SUCCESS")
-    
-    def check_firewall_status(self):
-        """Check system firewall configuration"""
-        try:
-            if self.system == "Linux":
-                # Check UFW (Ubuntu/Debian)
-                try:
-                    result = subprocess.run(
-                        ['sudo', '-n', 'ufw', 'status'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    if 'inactive' in result.stdout.lower():
-                        self.add_vulnerability(
-                            'Firewall',
-                            'HIGH',
-                            'UFW firewall is disabled',
-                            'System firewall is not active, exposing all services to network',
-                            recommendation='Enable firewall: sudo ufw enable'
-                        )
-                    elif result.returncode == 0:
-                        self.log("UFW firewall is active", "SUCCESS")
-                        
-                except subprocess.CalledProcessError:
-                    # Try iptables
-                    try:
-                        result = subprocess.run(
-                            ['sudo', '-n', 'iptables', '-L', '-n'],
-                            capture_output=True,
-                            text=True,
-                            timeout=5
-                        )
-                        
-                        if 'Chain INPUT (policy ACCEPT)' in result.stdout:
-                            lines = result.stdout.split('\n')
-                            if len(lines) < 5:  # Very few rules
-                                self.add_vulnerability(
-                                    'Firewall',
-                                    'MEDIUM',
-                                    'Minimal firewall rules detected',
-                                    'Firewall has very few rules, may be too permissive',
-                                    recommendation='Review and configure iptables rules'
-                                )
-                    except:
-                        self.log("Could not check iptables (requires sudo)", "WARNING")
-                        
-            elif self.system == "Windows":
-                try:
-                    result = subprocess.run(
-                        ['netsh', 'advfirewall', 'show', 'allprofiles'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    if 'State' in result.stdout and 'OFF' in result.stdout:
-                        self.add_vulnerability(
-                            'Firewall',
-                            'HIGH',
-                            'Windows Firewall is disabled',
-                            'One or more firewall profiles are turned off',
-                            recommendation='Enable Windows Firewall for all profiles'
-                        )
-                    elif result.returncode == 0:
-                        self.log("Windows Firewall is active", "SUCCESS")
-                        
-                except Exception as e:
-                    if self.verbose:
-                        self.log(f"Could not check Windows firewall: {e}", "ERROR")
-                        
-        except Exception as e:
-            self.log(f"Error checking firewall: {e}", "ERROR")
-    
-    def check_user_accounts(self):
-        """Analyze user accounts for security issues"""
-        try:
-            if self.system == "Linux":
-                if not os.path.exists('/etc/passwd'):
-                    return
-                
-                with open('/etc/passwd', 'r') as f:
-                    users = []
-                    for line in f:
-                        parts = line.strip().split(':')
-                        if len(parts) >= 7:
-                            username, _, uid, _, _, _, shell = parts[:7]
-                            
-                            # Critical: Non-root user with UID 0
-                            if uid == '0' and username != 'root':
-                                self.add_vulnerability(
-                                    'User Accounts',
-                                    'CRITICAL',
-                                    f'User "{username}" has root privileges',
-                                    f'Non-root user {username} has UID 0, granting full root access',
-                                    recommendation=f'Remove user {username} or change UID immediately'
-                                )
-                            
-                            # Track users with login shells
-                            if shell not in ['/usr/sbin/nologin', '/bin/false', '/sbin/nologin', '/bin/sync']:
-                                users.append(username)
-                    
-                    self.results['local_system']['login_users'] = users
-                    
-                    if len(users) > 15:
-                        self.add_vulnerability(
-                            'User Accounts',
-                            'LOW',
-                            f'{len(users)} users have shell access',
-                            'Large number of users with login shells increases attack surface',
-                            recommendation='Review users and disable accounts that don\'t need shell access'
-                        )
-                        
-            elif self.system == "Windows":
-                try:
-                    result = subprocess.run(
-                        ['net', 'user'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    users = re.findall(r'\b[A-Za-z0-9_-]+\b', result.stdout)
-                    self.results['local_system']['users'] = users
-                    
-                    # Check for Guest account
-                    if 'Guest' in users or 'guest' in users:
-                        self.add_vulnerability(
-                            'User Accounts',
-                            'MEDIUM',
-                            'Guest account detected',
-                            'Guest account may be enabled on the system',
-                            recommendation='Disable Guest account if not needed'
-                        )
-                except:
-                    pass
-                    
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking user accounts: {e}", "ERROR")
-    
-    def check_password_policy(self):
-        """Check password policy configuration"""
-        try:
-            if self.system == "Linux":
-                if os.path.exists('/etc/login.defs'):
-                    with open('/etc/login.defs', 'r') as f:
-                        content = f.read()
-                        
-                        # Check password aging
-                        max_days_match = re.search(r'^\s*PASS_MAX_DAYS\s+(\d+)', content, re.MULTILINE)
-                        min_days_match = re.search(r'^\s*PASS_MIN_DAYS\s+(\d+)', content, re.MULTILINE)
-                        min_len_match = re.search(r'^\s*PASS_MIN_LEN\s+(\d+)', content, re.MULTILINE)
-                        
-                        if max_days_match:
-                            max_days = int(max_days_match.group(1))
-                            if max_days > 90 or max_days == 99999:
-                                self.add_vulnerability(
-                                    'Password Policy',
-                                    'MEDIUM',
-                                    'Weak password expiration policy',
-                                    f'Password maximum age is {max_days} days (recommended: 90 or less)',
-                                    recommendation='Set PASS_MAX_DAYS to 90 in /etc/login.defs'
-                                )
-                        
-                        if min_len_match:
-                            min_len = int(min_len_match.group(1))
-                            if min_len < 8:
-                                self.add_vulnerability(
-                                    'Password Policy',
-                                    'HIGH',
-                                    'Weak minimum password length',
-                                    f'Minimum password length is only {min_len} characters (recommended: 12+)',
-                                    recommendation='Set PASS_MIN_LEN to at least 12 in /etc/login.defs'
-                                )
-                                
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking password policy: {e}", "ERROR")
-    
-    def check_running_services(self):
-        """Check for risky or unnecessary services"""
-        try:
-            risky_service_names = [
-                'telnet', 'ftp', 'rsh', 'rlogin', 'vsftpd', 'rsh-server'
-            ]
-            
-            if self.system == "Linux":
-                try:
-                    result = subprocess.run(
-                        ['systemctl', 'list-units', '--type=service', '--state=running'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    services_output = result.stdout.lower()
-                    
-                    for service in risky_service_names:
-                        if service in services_output:
-                            severity = 'HIGH' if service in ['telnet', 'rsh', 'rlogin'] else 'MEDIUM'
-                            self.add_vulnerability(
-                                'Running Services',
-                                severity,
-                                f'{service.upper()} service is running',
-                                f'Insecure service {service} is active and should be disabled',
-                                recommendation=f'Stop and disable service: sudo systemctl stop {service} && sudo systemctl disable {service}'
-                            )
-                            
-                except subprocess.CalledProcessError:
-                    pass
-                except subprocess.TimeoutExpired:
-                    self.log("Service check timed out", "WARNING")
-                    
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking services: {e}", "ERROR")
-    
-    def check_file_permissions(self):
-        """Check critical file permissions"""
-        try:
-            if self.system == "Linux":
-                critical_files = {
-                    '/etc/passwd': ('644', 'MEDIUM'),
-                    '/etc/shadow': ('000', 'CRITICAL'),
-                    '/etc/group': ('644', 'MEDIUM'),
-                    '/etc/gshadow': ('000', 'CRITICAL'),
-                    '/etc/ssh/sshd_config': ('600', 'HIGH'),
-                }
-                
-                for file_path, (expected_mode, severity) in critical_files.items():
-                    if os.path.exists(file_path):
-                        try:
-                            stat_info = os.stat(file_path)
-                            actual_mode = oct(stat_info.st_mode)[-3:]
-                            
-                            # Check if world-readable or world-writable
-                            world_perms = int(actual_mode[-1])
-                            
-                            if file_path == '/etc/shadow' and world_perms != 0:
-                                self.add_vulnerability(
-                                    'File Permissions',
-                                    'CRITICAL',
-                                    f'{file_path} has insecure permissions',
-                                    f'Shadow password file has mode {actual_mode} - should be 000 or 600',
-                                    recommendation=f'Fix immediately: sudo chmod 000 {file_path}'
-                                )
-                            elif world_perms > 0 and file_path in ['/etc/shadow', '/etc/gshadow']:
-                                self.add_vulnerability(
-                                    'File Permissions',
-                                    severity,
-                                    f'{file_path} is world-accessible',
-                                    f'Critical file has permissions {actual_mode} (world-accessible)',
-                                    recommendation=f'Fix: sudo chmod {expected_mode} {file_path}'
-                                )
-                        except Exception as e:
-                            if self.verbose:
-                                self.log(f"Error checking {file_path}: {e}", "ERROR")
-                                
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error in file permissions check: {e}", "ERROR")
-    
-    def check_ssh_config(self):
-        """Analyze SSH server configuration"""
-        try:
-            if self.system == "Linux":
-                ssh_config_path = '/etc/ssh/sshd_config'
-                
-                if not os.path.exists(ssh_config_path):
-                    return
-                
-                with open(ssh_config_path, 'r') as f:
-                    content = f.read()
-                    
-                    # Check for root login
-                    if re.search(r'^\s*PermitRootLogin\s+yes', content, re.MULTILINE | re.IGNORECASE):
-                        self.add_vulnerability(
-                            'SSH Configuration',
-                            'HIGH',
-                            'SSH permits root login',
-                            'Direct root login via SSH is enabled, increasing brute-force attack risk',
-                            recommendation='Set "PermitRootLogin no" in sshd_config and restart SSH'
-                        )
-                    
-                    # Check password authentication
-                    if re.search(r'^\s*PasswordAuthentication\s+yes', content, re.MULTILINE | re.IGNORECASE):
-                        self.add_vulnerability(
-                            'SSH Configuration',
-                            'MEDIUM',
-                            'SSH allows password authentication',
-                            'Password authentication is less secure than key-based authentication',
-                            recommendation='Use SSH keys and set "PasswordAuthentication no"'
-                        )
-                    
-                    # Check for Protocol 1 (very old SSH)
-                    if re.search(r'^\s*Protocol\s+1', content, re.MULTILINE):
-                        self.add_vulnerability(
-                            'SSH Configuration',
-                            'CRITICAL',
-                            'SSH Protocol 1 is enabled',
-                            'SSH Protocol 1 has known security vulnerabilities and should never be used',
-                            recommendation='Remove Protocol 1, use Protocol 2 only',
-                            cve='CVE-2001-0572'
-                        )
-                    
-                    # Check for empty passwords
-                    if re.search(r'^\s*PermitEmptyPasswords\s+yes', content, re.MULTILINE | re.IGNORECASE):
-                        self.add_vulnerability(
-                            'SSH Configuration',
-                            'CRITICAL',
-                            'SSH permits empty passwords',
-                            'SSH is configured to allow empty passwords',
-                            recommendation='Set "PermitEmptyPasswords no" immediately'
-                        )
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking SSH config: {e}", "ERROR")
-    
-    def check_antivirus(self):
-        """Check for antivirus/security software presence"""
-        try:
-            if self.system == "Linux":
-                av_tools = {
-                    'clamav': 'ClamAV',
-                    'clamscan': 'ClamAV',
-                    'rkhunter': 'RKHunter',
-                    'chkrootkit': 'chkrootkit',
-                    'lynis': 'Lynis'
-                }
-                
-                found_tools = []
-                for tool, name in av_tools.items():
-                    try:
-                        result = subprocess.run(
-                            ['which', tool],
-                            capture_output=True,
-                            text=True,
-                            timeout=2
-                        )
-                        if result.returncode == 0:
-                            found_tools.append(name)
-                    except:
-                        pass
-                
-                if found_tools:
-                    self.log(f"Security tools found: {', '.join(found_tools)}", "SUCCESS")
-                else:
-                    self.add_vulnerability(
-                        'Security Software',
-                        'LOW',
-                        'No security/antivirus tools detected',
-                        'System lacks antivirus or anti-malware protection',
-                        recommendation='Consider installing ClamAV, RKHunter, or similar tools'
-                    )
-                    
-            elif self.system == "Windows":
-                try:
-                    result = subprocess.run(
-                        ['powershell', '-Command', 'Get-MpComputerStatus'],
-                        capture_output=True,
-                        text=True,
-                        timeout=10
-                    )
-                    
-                    if 'AntivirusEnabled' in result.stdout:
-                        if ': False' in result.stdout or ': $false' in result.stdout:
-                            self.add_vulnerability(
-                                'Security Software',
-                                'HIGH',
-                                'Windows Defender is disabled',
-                                'Real-time antivirus protection is turned off',
-                                recommendation='Enable Windows Defender in Windows Security settings'
-                            )
-                        else:
-                            self.log("Windows Defender is active", "SUCCESS")
-                            
-                except Exception as e:
-                    if self.verbose:
-                        self.log(f"Could not check Windows Defender: {e}", "ERROR")
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking antivirus: {e}", "ERROR")
-    
-    def check_disk_encryption(self):
-        """Check disk encryption status"""
-        try:
-            if self.system == "Linux":
-                try:
-                    result = subprocess.run(
-                        ['lsblk', '-f'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    if 'crypto_LUKS' in result.stdout:
-                        self.log("LUKS encryption detected", "SUCCESS")
-                    else:
-                        self.add_vulnerability(
-                            'Disk Encryption',
-                            'MEDIUM',
-                            'Disk encryption not detected',
-                            'System partitions do not appear to be encrypted with LUKS',
-                            recommendation='Consider enabling full disk encryption for data protection'
-                        )
-                        
-                except subprocess.CalledProcessError:
-                    pass
-                    
-            elif self.system == "Windows":
-                try:
-                    result = subprocess.run(
-                        ['manage-bde', '-status'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    if 'Protection Off' in result.stdout or 'Protection Status:    Off' in result.stdout:
-                        self.add_vulnerability(
-                            'Disk Encryption',
-                            'MEDIUM',
-                            'BitLocker not enabled',
-                            'Disk encryption (BitLocker) is not active on system drives',
-                            recommendation='Enable BitLocker encryption in Windows settings'
-                        )
-                    elif 'Protection On' in result.stdout:
-                        self.log("BitLocker encryption is active", "SUCCESS")
-                        
-                except Exception as e:
-                    if self.verbose:
-                        self.log(f"Could not check BitLocker: {e}", "ERROR")
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking disk encryption: {e}", "ERROR")
-    
-    def check_network_shares(self):
-        """Check for network file shares"""
-        try:
-            if self.system == "Linux":
-                # Check for Samba
-                if os.path.exists('/etc/samba/smb.conf'):
-                    self.add_vulnerability(
-                        'Network Shares',
-                        'LOW',
-                        'Samba file sharing is configured',
-                        'SMB/Samba service is configured on this system',
-                        recommendation='Ensure Samba shares are properly secured with authentication'
-                    )
-                
-                # Check for NFS
-                if os.path.exists('/etc/exports'):
-                    with open('/etc/exports', 'r') as f:
-                        exports = f.read().strip()
-                        if exports and not exports.startswith('#'):
-                            self.add_vulnerability(
-                                'Network Shares',
-                                'MEDIUM',
-                                'NFS exports configured',
-                                'NFS file shares are configured and may be accessible',
-                                recommendation='Review /etc/exports and ensure proper access controls'
-                            )
-                            
-            elif self.system == "Windows":
-                try:
-                    result = subprocess.run(
-                        ['net', 'share'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    # Parse shares (excluding default admin shares)
-                    shares = [
-                        line for line in result.stdout.split('\n')
-                        if line.strip() and '$' not in line
-                        and 'Share name' not in line
-                        and '---' not in line
-                        and 'The command completed' not in line
-                    ]
-                    
-                    if len(shares) > 0:
-                        self.add_vulnerability(
-                            'Network Shares',
-                            'MEDIUM',
-                            f'{len(shares)} network shares detected',
-                            'Multiple network shares are configured and accessible',
-                            recommendation='Review shares with "net share" and remove unnecessary ones'
-                        )
-                        
-                except Exception as e:
-                    if self.verbose:
-                        self.log(f"Could not enumerate shares: {e}", "ERROR")
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking network shares: {e}", "ERROR")
-    
-    def check_installed_software(self):
-        """Check for known vulnerable software"""
-        try:
-            vulnerable_software = {
-                'telnet': ('Telnet client', 'MEDIUM', 'Insecure, use SSH instead'),
-                'ftp': ('FTP client', 'MEDIUM', 'Use SFTP or SCP instead'),
-                'rsh': ('RSH client', 'HIGH', 'Extremely insecure, remove immediately'),
-                'rlogin': ('RLogin', 'HIGH', 'Extremely insecure, remove immediately'),
-            }
-            
-            if self.system == "Linux":
-                for software, (name, severity, message) in vulnerable_software.items():
-                    try:
-                        result = subprocess.run(
-                            ['which', software],
-                            capture_output=True,
-                            text=True,
-                            timeout=2
-                        )
-                        
-                        if result.returncode == 0:
-                            self.add_vulnerability(
-                                'Installed Software',
-                                severity,
-                                f'{name} is installed',
-                                message,
-                                recommendation=f'Remove package: sudo apt remove {software} (or equivalent)'
-                            )
-                    except:
-                        pass
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking software: {e}", "ERROR")
-    
-    def check_weak_protocols(self):
-        """Check for weak/insecure network protocols"""
-        weak_protocol_ports = {
-            23: ('Telnet', 'CRITICAL'),
-            21: ('FTP', 'HIGH'),
-            69: ('TFTP', 'HIGH'),
-            79: ('Finger', 'MEDIUM'),
-            513: ('rlogin', 'HIGH'),
-            514: ('rsh', 'HIGH'),
-        }
-        
-        for port, (protocol, severity) in weak_protocol_ports.items():
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.2)
-                    result = sock.connect_ex(('127.0.0.1', port))
-                    
-                    if result == 0:
-                        self.add_vulnerability(
-                            'Weak Protocols',
-                            severity,
-                            f'{protocol} protocol active on port {port}',
-                            f'{protocol} transmits data in cleartext and should not be used',
-                            recommendation=f'Disable {protocol} and use secure alternatives (SSH, SFTP, etc.)'
-                        )
-            except:
-                pass
-    
-    def check_system_hardening(self):
-        """Check for system hardening measures"""
-        try:
-            if self.system == "Linux":
-                # Check if SELinux is enabled
-                if os.path.exists('/usr/sbin/getenforce'):
-                    try:
-                        result = subprocess.run(
-                            ['getenforce'],
-                            capture_output=True,
-                            text=True,
-                            timeout=2
-                        )
-                        
-                        if 'Disabled' in result.stdout:
-                            self.add_vulnerability(
-                                'System Hardening',
-                                'MEDIUM',
-                                'SELinux is disabled',
-                                'Security-Enhanced Linux is not active',
-                                recommendation='Enable SELinux for enhanced security (requires reboot)'
-                            )
-                        elif 'Enforcing' in result.stdout:
-                            self.log("SELinux is enforcing", "SUCCESS")
-                    except:
-                        pass
-                
-                # Check AppArmor
-                if os.path.exists('/sys/module/apparmor'):
-                    try:
-                        result = subprocess.run(
-                            ['aa-status'],
-                            capture_output=True,
-                            text=True,
-                            timeout=2
-                        )
-                        
-                        if 'apparmor module is loaded' in result.stdout.lower():
-                            self.log("AppArmor is active", "SUCCESS")
-                    except:
-                        pass
-                        
-        except Exception as e:
-            if self.verbose:
-                self.log(f"Error checking system hardening: {e}", "ERROR")
-    
-    # ==================== NETWORK DISCOVERY ====================
-    
-    def get_local_network(self) -> Optional[str]:
-        """
-        Determine local network subnet
-        
-        Returns:
-            Network address in CIDR notation (e.g., '192.168.1.0/24')
-        """
-        try:
-            # Get local IP by connecting to external host
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                local_ip = s.getsockname()[0]
-            
-            # Try to get network from routing table
-            if self.system in ["Linux", "Darwin"]:
-                try:
-                    result = subprocess.run(
-                        ['ip', 'route'],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    
-                    # Parse routing table
-                    for line in result.stdout.split('\n'):
-                        if 'default' not in line and local_ip.rsplit('.', 1)[0] in line:
-                            parts = line.split()
-                            if parts and '/' in parts[0]:
-                                return parts[0]
-                                
-                except subprocess.CalledProcessError:
-                    pass
-            
-            # Fallback: assume /24 network
-            network_prefix = '.'.join(local_ip.split('.')[:-1])
-            return f"{network_prefix}.0/24"
-            
-        except Exception as e:
-            self.log(f"Error detecting network: {e}", "ERROR")
-            return None
-    
-    def ping_host(self, ip: str) -> bool:
-        """
-        Check if a host is alive using TCP connection attempts
-        
-        Args:
-            ip: IP address to check
-            
-        Returns:
-            True if host responds, False otherwise
-        """
-        # Try common ports that are likely to be open
-        test_ports = [80, 443, 22, 445, 139]
-        
-        for port in test_ports:
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.3)
-                    result = sock.connect_ex((ip, port))
-                    if result == 0:
-                        return True
-            except:
-                continue
-        
-        return False
-    
-    def discover_hosts(self, network: str) -> List[str]:
-        """
-        Discover active hosts on the network
-        
-        Args:
-            network: Network address in CIDR notation
-            
-        Returns:
-            List of active IP addresses
-        """
-        self.log(f"Discovering hosts on network {network}...", "INFO")
-        
-        try:
-            network_obj = ipaddress.ip_network(network, strict=False)
-            all_hosts = list(network_obj.hosts())
-            
-            self.log(f"Scanning {len(all_hosts)} potential hosts...", "INFO")
-            
-            active_hosts = []
-            
-            # Use thread pool for concurrent scanning
-            with ThreadPoolExecutor(max_workers=self.threads) as executor:
-                future_to_ip = {
-                    executor.submit(self.ping_host, str(ip)): ip
-                    for ip in all_hosts
-                }
-                
-                completed = 0
-                for future in as_completed(future_to_ip):
-                    ip = future_to_ip[future]
-                    completed += 1
-                    
-                    if completed % 50 == 0:
-                        self.log(f"Progress: {completed}/{len(all_hosts)} hosts checked", "INFO")
-                    
-                    try:
-                        if future.result():
-                            active_hosts.append(str(ip))
-                            if self.verbose:
-                                self.log(f"Active host found: {ip}", "SUCCESS")
-                    except Exception as e:
-                        if self.verbose:
-                            self.log(f"Error checking {ip}: {e}", "ERROR")
-            
-            self.log(f"Discovery complete: {len(active_hosts)} active hosts found", "SUCCESS")
-            return active_hosts
-            
-        except Exception as e:
-            self.log(f"Error during host discovery: {e}", "ERROR")
-            return []
-    
-    # ==================== REMOTE HOST SCANNING ====================
-    
-    def scan_ports(self, ip: str) -> List[Dict[str, Any]]:
-        """
-        Scan common ports on a remote host
-        
-        Args:
-            ip: Target IP address
-            
-        Returns:
-            List of open ports with service information
-        """
-        open_ports = []
-        
-        for port, service in COMMON_PORTS.items():
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.settimeout(0.5)
-                    result = sock.connect_ex((ip, port))
-                    
-                    if result == 0:
-                        open_ports.append({
-                            'port': port,
-                            'service': service,
-                            'state': 'open'
-                        })
-                        self.stats['ports_scanned'] += 1
-                        
-            except Exception as e:
-                if self.verbose:
-                    self.log(f"Error scanning {ip}:{port} - {e}", "ERROR")
-        
-        return open_ports
-    
-    def grab_banner(self, ip: str, port: int) -> Optional[str]:
-        """
-        Attempt to grab service banner
-        
-        Args:
-            ip: Target IP
-            port: Target port
-            
-        Returns:
-            Banner string if successful, None otherwise
-        """
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                sock.connect((ip, port))
-                
-                # Send appropriate probe
-                if port in [80, 8080, 8443]:
-                    sock.send(b'GET / HTTP/1.0\r\nHost: ' + ip.encode() + b'\r\n\r\n')
-                elif port == 22:
-                    pass  # SSH sends banner automatically
-                else:
-                    sock.send(b'\r\n')
-                
-                banner = sock.recv(1024).decode('utf-8', errors='ignore').strip()
-                return banner if banner else None
-                
-        except:
-            return None
-    
-    def scan_remote_host(self, ip: str) -> Dict[str, Any]:
-        """
-        Perform comprehensive vulnerability scan on remote host
-        
-        Args:
-            ip: Target IP address
-            
-        Returns:
-            Dictionary containing host information and findings
-        """
-        if self.verbose:
-            self.log(f"Scanning remote host {ip}...", "INFO")
-        
-        host_info = {
-            'ip': ip,
-            'hostname': None,
-            'open_ports': [],
-            'os_guess': None,
-            'vulnerabilities': []
-        }
-        
-        # Reverse DNS lookup
-        try:
-            hostname = socket.gethostbyaddr(ip)[0]
-            host_info['hostname'] = hostname
-        except:
-            pass
-        
-        # Port scan
-        open_ports = self.scan_ports(ip)
-        host_info['open_ports'] = open_ports
-        
-        # Analyze each open port
-        for port_info in open_ports:
-            port = port_info['port']
-            service = port_info['service']
-            
-            # Check against known risky services
-            if port in RISKY_SERVICES:
-                service_name, severity, risk_desc = RISKY_SERVICES[port]
-                self.add_vulnerability(
-                    'Remote Services',
-                    severity,
-                    f'{service_name} exposed on {ip}',
-                    f'Host {ip} has {service_name} (port {port}) accessible from network. {risk_desc}',
-                    host=ip,
-                    recommendation=f'Disable {service_name} or restrict access with firewall rules'
-                )
-            
-            # Database exposure checks
-            elif port in [3306, 5432, 27017, 6379, 1433]:
-                self.add_vulnerability(
-                    'Remote Services',
-                    'HIGH',
-                    f'{service} database exposed on {ip}',
-                    f'Database service {service} (port {port}) is accessible from network',
-                    host=ip,
-                    recommendation='Restrict database access to localhost or use firewall rules'
-                )
-            
-            # Web servers
-            elif port in [80, 443, 8080, 8443]:
-                banner = self.grab_banner(ip, port)
-                if banner:
-                    # Check for server version disclosure
-                    if 'Server:' in banner:
-                        self.add_vulnerability(
-                            'Information Disclosure',
-                            'LOW',
-                            f'Web server version disclosed on {ip}',
-                            f'Web server on {ip}:{port} reveals version information',
-                            host=ip,
-                            recommendation='Configure web server to hide version information'
-                        )
-            
-            # SSH version check
-            elif port == 22:
-                banner = self.grab_banner(ip, port)
-                if banner and 'ssh' in banner.lower():
-                    # Check for outdated OpenSSH
-                    version_match = re.search(r'openssh[_\s]+([\d.]+)', banner.lower())
-                    if version_match:
-                        version_str = version_match.group(1)
-                        try:
-                            major, minor = map(int, version_str.split('.')[:2])
-                            if major < 7:
-                                self.add_vulnerability(
-                                    'Outdated Software',
-                                    'HIGH',
-                                    f'Outdated OpenSSH on {ip}',
-                                    f'Host {ip} running OpenSSH {version_str} (older than 7.0)',
-                                    host=ip,
-                                    recommendation='Update OpenSSH to latest version'
-                                )
-                        except:
-                            pass
-        
-        self.stats['hosts_scanned'] += 1
-        return host_info
-    
-    def scan_network_hosts(self, hosts: List[str]):
-        """
-        Scan all discovered network hosts
-        
-        Args:
-            hosts: List of IP addresses to scan
-        """
-        self.log(f"Initiating vulnerability scan on {len(hosts)} hosts...", "INFO")
-        
-        # Use thread pool for concurrent host scanning
-        with ThreadPoolExecutor(max_workers=min(10, len(hosts))) as executor:
-            future_to_host = {
-                executor.submit(self.scan_remote_host, host): host
-                for host in hosts
-            }
-            
-            for future in as_completed(future_to_host):
-                host = future_to_host[future]
-                try:
-                    host_info = future.result()
-                    self.results['network_hosts'].append(host_info)
-                except Exception as e:
-                    self.log(f"Error scanning {host}: {e}", "ERROR")
-        
-        self.log("Network host scanning completed", "SUCCESS")
-    
-    # ==================== REPORTING ====================
-    
-    def calculate_risk_score(self) -> int:
-        """
-        Calculate overall risk score (0-100)
-        
-        Returns:
-            Risk score based on vulnerability severity
-        """
-        severity_weights = {
-            'CRITICAL': 25,
-            'HIGH': 15,
-            'MEDIUM': 5,
-            'LOW': 1,
-            'INFO': 0
-        }
-        
-        score = 0
-        for vuln in self.results['vulnerabilities']:
-            score += severity_weights.get(vuln['severity'], 0)
-        
-        # Cap at 100
-        return min(score, 100)
-    
-    def generate_summary(self):
-        """Generate vulnerability summary statistics"""
-        summary = {
-            'critical': 0,
-            'high': 0,
-            'medium': 0,
-            'low': 0,
-            'info': 0,
-            'total': len(self.results['vulnerabilities'])
-        }
-        
-        for vuln in self.results['vulnerabilities']:
-            severity = vuln['severity'].lower()
-            if severity in summary:
-                summary[severity] += 1
-        
-        summary['risk_score'] = self.calculate_risk_score()
-        summary['hosts_scanned'] = self.stats['hosts_scanned']
-        summary['ports_scanned'] = self.stats['ports_scanned']
-        
-        self.results['summary'] = summary
-    
-    def print_report(self):
-        """Print comprehensive vulnerability report to console"""
-        print_separator('=')
-        print(f"{Colors.BOLD}{Colors.CYAN}VULNERABILITY SCAN REPORT{Colors.ENDC}")
-        print_separator('=')
-        
-        self.generate_summary()
-        summary = self.results['summary']
-        
-        # Summary section
-        print(f"\n{Colors.BOLD}SCAN SUMMARY:{Colors.ENDC}")
-        print(f"  Scan Mode: {self.results['scan_mode']}")
-        print(f"  Scan Time: {self.results['scan_time']}")
-        print(f"  Total Vulnerabilities: {summary['total']}")
-        
-        if summary['critical'] > 0:
-            print(f"  {Colors.RED}{Colors.BOLD}⚠ Critical: {summary['critical']}{Colors.ENDC}")
-        if summary['high'] > 0:
-            print(f"  {Colors.RED}● High: {summary['high']}{Colors.ENDC}")
-        if summary['medium'] > 0:
-            print(f"  {Colors.YELLOW}● Medium: {summary['medium']}{Colors.ENDC}")
-        if summary['low'] > 0:
-            print(f"  {Colors.CYAN}● Low: {summary['low']}{Colors.ENDC}")
-        if summary['info'] > 0:
-            print(f"  ○ Info: {summary['info']}")
-        
-        # Risk score
-        risk_score = summary['risk_score']
-        risk_color = Colors.RED if risk_score > 70 else Colors.YELLOW if risk_score > 30 else Colors.GREEN
-        print(f"\n  {Colors.BOLD}Risk Score: {risk_color}{risk_score}/100{Colors.ENDC}")
-        
-        # Local system info
-        if self.results['local_system']:
-            print(f"\n{Colors.BOLD}LOCAL SYSTEM:{Colors.ENDC}")
-            local = self.results['local_system']
-            print(f"  Hostname: {local.get('hostname', 'N/A')}")
-            print(f"  IP Address: {local.get('local_ip', 'N/A')}")
-            print(f"  Platform: {local.get('platform', 'N/A')}")
-            print(f"  Open Ports: {len(local.get('open_ports', []))}")
-        
-        # Network hosts
-        if self.results['network_hosts']:
-            print(f"\n{Colors.BOLD}NETWORK HOSTS DISCOVERED:{Colors.ENDC}")
-            print(f"  Total Active Hosts: {len(self.results['network_hosts'])}")
-            
-            for host in self.results['network_hosts'][:10]:  # Show first 10
-                hostname = host.get('hostname', 'Unknown')
-                ports_count = len(host.get('open_ports', []))
-                print(f"  • {host['ip']} ({hostname}) - {ports_count} open ports")
-            
-            if len(self.results['network_hosts']) > 10:
-                print(f"  ... and {len(self.results['network_hosts']) - 10} more")
-        
-        # Detailed vulnerabilities
-        if self.results['vulnerabilities']:
-            print(f"\n{Colors.BOLD}DETAILED VULNERABILITY FINDINGS:{Colors.ENDC}")
-            print_separator('-')
-            
-            # Group by severity
-            by_severity = {}
-            for vuln in self.results['vulnerabilities']:
-                sev = vuln['severity']
-                if sev not in by_severity:
-                    by_severity[sev] = []
-                by_severity[sev].append(vuln)
-            
-            # Display in severity order
-            for severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']:
-                if severity in by_severity:
-                    vulns = by_severity[severity]
-                    
-                    severity_colors = {
-                        'CRITICAL': Colors.RED + Colors.BOLD,
-                        'HIGH': Colors.RED,
-                        'MEDIUM': Colors.YELLOW,
-                        'LOW': Colors.CYAN,
-                        'INFO': Colors.BLUE
-                    }
-                    
-                    color = severity_colors[severity]
-                    print(f"\n{color}[{severity}] {len(vulns)} finding(s):{Colors.ENDC}")
-                    
-                    for i, vuln in enumerate(vulns, 1):
-                        print(f"\n  {i}. {Colors.BOLD}{vuln['title']}{Colors.ENDC}")
-                        print(f"     Host: {vuln['host']}")
-                        print(f"     Category: {vuln['category']}")
-                        print(f"     {vuln['description']}")
-                        
-                        if vuln.get('recommendation'):
-                            print(f"     {Colors.GREEN}→ Fix: {vuln['recommendation']}{Colors.ENDC}")
-                        
-                        if vuln.get('cve'):
-                            print(f"     CVE: {vuln['cve']}")
-        
-        print_separator('=')
-        print(f"{Colors.BOLD}Scan completed at {get_timestamp()}{Colors.ENDC}\n")
-    
-    def save_report(self, filename: str = 'vulnerability_report.json'):
-        """
-        Save detailed report to JSON file
-        
-        Args:
-            filename: Output filename
-        """
-        try:
-            output_path = os.path.join('/Users/ricardomendespinto/Desktop/vulnscanner', filename)
-            
-            with open(output_path, 'w') as f:
-                json.dump(self.results, f, indent=2, sort_keys=True)
-            
-            self.log(f"Report saved to {output_path}", "SUCCESS")
-            
-            # Also save a copy in current directory for convenience
-            with open(filename, 'w') as f:
-                json.dump(self.results, f, indent=2, sort_keys=True)
-                
-        except Exception as e:
-            self.log(f"Error saving report: {e}", "ERROR")
-    
-    # ==================== MAIN EXECUTION ====================
-    
-    def run(self):
-        """Execute vulnerability scan based on selected mode"""
-        self.print_banner()
-        
-        start_time = time.time()
-        
-        try:
-            # Local system scan
-            if self.scan_mode in [ScanMode.LOCAL_ONLY, ScanMode.FULL_SCAN, ScanMode.QUICK_SCAN]:
-                self.check_local_system()
-            
-            # Network scan
-            if self.scan_mode in [ScanMode.NETWORK_ONLY, ScanMode.FULL_SCAN]:
-                network = self.get_local_network()
-                
-                if network:
-                    self.log(f"Detected network: {network}", "INFO")
-                    
-                    # Discover hosts
-                    hosts = self.discover_hosts(network)
-                    
-                    if hosts:
-                        # Remove localhost
-                        try:
-                            local_ip = socket.gethostbyname(socket.gethostname())
-                            hosts = [h for h in hosts if h != local_ip]
-                        except:
-                            pass
-                        
-                        if hosts:
-                            self.scan_network_hosts(hosts)
-                        else:
-                            self.log("No remote hosts found on network", "INFO")
-                    else:
-                        self.log("No active hosts discovered", "INFO")
-                else:
-                    self.log("Could not determine network range", "ERROR")
-            
-            # Quick scan mode (limited checks)
-            if self.scan_mode == ScanMode.QUICK_SCAN:
-                self.log("Quick scan mode: limited checks performed", "INFO")
-            
-            # Calculate execution time
-            elapsed_time = time.time() - start_time
-            self.results['scan_duration_seconds'] = round(elapsed_time, 2)
-            
-            # Generate and display report
-            self.print_report()
-            
-            # Save to file
-            self.save_report()
-            
-        except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Scan interrupted by user{Colors.ENDC}")
-            self.print_report()
-            self.save_report()
-        except Exception as e:
-            self.log(f"Critical error during scan: {e}", "CRITICAL")
-            raise
-    
-    def print_banner(self):
-        """Display scanner banner"""
-        banner = f"""
-{Colors.CYAN}{Colors.BOLD}
-╔════════════════════════════════════════════════════════════════╗
-║                                                                ║
-║     Advanced Network & Station Vulnerability Scanner v2.0     ║
-║                                                                ║
-║              Professional Security Assessment Tool            ║
-║                                                                ║
-╚════════════════════════════════════════════════════════════════╝
-{Colors.ENDC}
-{Colors.BOLD}Scan initiated:{Colors.ENDC} {get_timestamp()}
-{Colors.BOLD}Mode:{Colors.ENDC} {self._get_scan_mode_name()}
+.stSuccess { background: rgba(109,186,138,0.07) !important; border-left: 2px solid var(--ok) !important;   border-radius: 2px !important; }
+.stWarning { background: rgba(200,168,75,0.07) !important;  border-left: 2px solid var(--warn) !important;  border-radius: 2px !important; }
+.stError   { background: rgba(224,92,92,0.07) !important;   border-left: 2px solid var(--crit) !important;  border-radius: 2px !important; }
+.stInfo    { background: var(--accent-dim) !important;       border-left: 2px solid var(--accent) !important; border-radius: 2px !important; }
 
-{Colors.YELLOW}{Colors.BOLD}⚠ LEGAL WARNING:{Colors.ENDC}
-{Colors.YELLOW}Only scan systems and networks you own or have explicit permission to test.
-Unauthorized scanning may violate laws and regulations.{Colors.ENDC}
+hr { border-color: var(--border) !important; margin: 10px 0 !important; }
 
-        """
-        print(banner)
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+
+SEVERITY_COLORS = {
+    "CRITICAL": "#e05c5c",
+    "HIGH":     "#c87a3a",
+    "MEDIUM":   "#c8a84b",
+    "LOW":      "#7df9ff",
+    "INFO":     "#44444f",
+}
+
+SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+
+COMMON_VULNS: dict = {
+    21: [
+        {"cve": "CVE-2011-2523", "desc": "vsftpd 2.3.4 backdoor command execution", "cvss": 10.0, "severity": "CRITICAL"},
+        {"cve": "CVE-1999-0497", "desc": "Anonymous FTP login permitted", "cvss": 5.0, "severity": "MEDIUM"},
+    ],
+    22: [
+        {"cve": "CVE-2018-15473", "desc": "OpenSSH user enumeration via malformed packet", "cvss": 5.3, "severity": "MEDIUM"},
+        {"cve": "CVE-2023-38408", "desc": "OpenSSH ssh-agent remote code execution", "cvss": 9.8, "severity": "CRITICAL"},
+    ],
+    23: [
+        {"cve": "CVE-2020-10188", "desc": "Telnet cleartext credential exposure", "cvss": 9.8, "severity": "CRITICAL"},
+    ],
+    25: [
+        {"cve": "CVE-2021-3129",  "desc": "Postfix open relay allows spam amplification", "cvss": 5.3, "severity": "MEDIUM"},
+    ],
+    80: [
+        {"cve": "CVE-2021-41773", "desc": "Apache 2.4.49 path traversal / RCE", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2022-22965", "desc": "Spring4Shell — Spring MVC RCE via data binding", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2017-9798",  "desc": "Optionsbleed — Apache OPTIONS memory leak", "cvss": 7.5, "severity": "HIGH"},
+    ],
+    111: [
+        {"cve": "CVE-2017-8779",  "desc": "rpcbind UDP amplification (memcrashed)", "cvss": 7.5, "severity": "HIGH"},
+    ],
+    443: [
+        {"cve": "CVE-2014-0160",  "desc": "Heartbleed — OpenSSL TLS heartbeat memory leak", "cvss": 7.5, "severity": "HIGH"},
+        {"cve": "CVE-2021-44228", "desc": "Log4Shell — JNDI injection via HTTP headers", "cvss": 10.0, "severity": "CRITICAL"},
+        {"cve": "CVE-2022-0778",  "desc": "OpenSSL BN_mod_sqrt infinite loop DoS", "cvss": 7.5, "severity": "HIGH"},
+    ],
+    445: [
+        {"cve": "CVE-2017-0144",  "desc": "EternalBlue — SMBv1 buffer overflow RCE", "cvss": 9.3, "severity": "CRITICAL"},
+        {"cve": "CVE-2020-0796",  "desc": "SMBGhost — SMBv3 compression integer overflow RCE", "cvss": 10.0, "severity": "CRITICAL"},
+        {"cve": "CVE-2021-36942", "desc": "PetitPotam — NTLM relay via EFS RPC", "cvss": 9.8, "severity": "CRITICAL"},
+    ],
+    512: [
+        {"cve": "CVE-1999-0651",  "desc": "rsh daemon allows unauthenticated remote execution", "cvss": 10.0, "severity": "CRITICAL"},
+    ],
+    1433:[
+        {"cve": "CVE-2020-0618",  "desc": "SQL Server Reporting Services RCE", "cvss": 8.8, "severity": "HIGH"},
+    ],
+    2049:[
+        {"cve": "CVE-2019-3010",  "desc": "NFS world-readable export — data exfiltration", "cvss": 6.5, "severity": "MEDIUM"},
+    ],
+    3306:[
+        {"cve": "CVE-2012-2122",  "desc": "MySQL auth bypass via timing attack", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2021-2307",  "desc": "MySQL Server privilege escalation via file read", "cvss": 6.1, "severity": "MEDIUM"},
+    ],
+    3389:[
+        {"cve": "CVE-2019-0708",  "desc": "BlueKeep — RDP pre-auth heap overflow RCE", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2020-0609",  "desc": "Windows RD Gateway pre-auth RCE", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2022-21990", "desc": "Remote Desktop Client RCE via crafted server", "cvss": 8.8, "severity": "HIGH"},
+    ],
+    5432:[
+        {"cve": "CVE-2019-9193",  "desc": "PostgreSQL COPY TO/FROM PROGRAM arbitrary command exec", "cvss": 7.2, "severity": "HIGH"},
+    ],
+    5900:[
+        {"cve": "CVE-2019-15681", "desc": "LibVNCServer use-after-free memory leak", "cvss": 7.5, "severity": "HIGH"},
+    ],
+    6379:[
+        {"cve": "CVE-2022-0543",  "desc": "Redis Lua sandbox escape — arbitrary code exec", "cvss": 10.0, "severity": "CRITICAL"},
+    ],
+    8080:[
+        {"cve": "CVE-2021-26084", "desc": "Confluence Server OGNL injection RCE", "cvss": 9.8, "severity": "CRITICAL"},
+        {"cve": "CVE-2019-17558", "desc": "Apache Solr Velocity RCE via template injection", "cvss": 8.1, "severity": "HIGH"},
+    ],
+    8443:[
+        {"cve": "CVE-2021-22005", "desc": "vCenter Server arbitrary file upload to RCE", "cvss": 9.8, "severity": "CRITICAL"},
+    ],
+    9200:[
+        {"cve": "CVE-2021-44228", "desc": "Elasticsearch Log4Shell via log message injection", "cvss": 10.0, "severity": "CRITICAL"},
+        {"cve": "CVE-2015-1427",  "desc": "Elasticsearch Groovy sandbox escape RCE", "cvss": 10.0, "severity": "CRITICAL"},
+    ],
+    27017:[
+        {"cve": "CVE-2013-4650",  "desc": "MongoDB unauthenticated remote access", "cvss": 9.4, "severity": "CRITICAL"},
+    ],
+}
+
+CLOUD_CHECKS: dict = {
+    "S3 Public Read Buckets":          {"risk": "HIGH",     "desc": "S3 buckets with public-read ACL expose data to the internet",          "remediation": "Set bucket ACL to private; grant least-privilege access via bucket policies."},
+    "S3 Public Write Buckets":         {"risk": "CRITICAL", "desc": "S3 buckets with public-write ACL allow arbitrary data injection",       "remediation": "Remove public-write ACL immediately; audit recent uploads for malicious content."},
+    "IAM Wildcard Policies":           {"risk": "CRITICAL", "desc": "IAM policies granting Action:* or Resource:* violate least-privilege",  "remediation": "Replace wildcards with resource-scoped, action-specific permissions."},
+    "Unrestricted Inbound 0.0.0.0/0":  {"risk": "HIGH",     "desc": "Security groups with 0.0.0.0/0 inbound expose services publicly",       "remediation": "Restrict inbound rules to known CIDRs; use bastion or VPN for admin."},
+    "MFA Not Enforced":                {"risk": "HIGH",     "desc": "Root account or IAM users lack MFA — credential stuffing risk",          "remediation": "Enable MFA on all IAM users; enforce via SCP at organisation level."},
+    "CloudTrail Disabled":             {"risk": "MEDIUM",   "desc": "No CloudTrail logging — API calls unauditable for incident response",    "remediation": "Enable CloudTrail in all regions; ship logs to immutable S3 bucket."},
+    "Encryption at Rest Disabled":     {"risk": "MEDIUM",   "desc": "EBS volumes or RDS instances have no at-rest encryption",                "remediation": "Enable AES-256 encryption on all storage; rotate unencrypted volumes."},
+    "Public RDS Snapshots":            {"risk": "HIGH",     "desc": "RDS snapshots marked public — any AWS account can restore them",         "remediation": "Set all snapshots to private; audit sharing settings in all regions."},
+    "Public EC2 AMIs":                 {"risk": "MEDIUM",   "desc": "Custom AMIs shared publicly may leak configuration or credentials",      "remediation": "Make AMIs private; scrub embedded credentials before any sharing."},
+    "Default VPC In Use":              {"risk": "LOW",      "desc": "Default VPC lacks custom network segmentation controls",                  "remediation": "Create purpose-built VPCs with private/public subnets and NACLs."},
+    "No VPC Flow Logs":                {"risk": "LOW",      "desc": "VPC Flow Logs disabled — no visibility into network-level anomalies",     "remediation": "Enable Flow Logs for all VPCs; forward to CloudWatch or SIEM."},
+    "SSM Parameter Plaintext Secrets": {"risk": "MEDIUM",   "desc": "Sensitive values stored without SecureString encryption in SSM",         "remediation": "Migrate to SecureString with KMS; rotate any exposed values."},
+    "GuardDuty Disabled":              {"risk": "HIGH",     "desc": "AWS GuardDuty threat detection not active in this region",                "remediation": "Enable GuardDuty in all regions; configure SNS alerts for high-severity findings."},
+    "IMDSv1 Enabled on EC2":           {"risk": "MEDIUM",   "desc": "IMDSv1 allows SSRF-to-credential-theft on EC2 instances",               "remediation": "Enforce IMDSv2 via instance metadata option; set hop limit to 1."},
+}
+
+# ── Session state ──────────────────────────────────────────────────────────────
+_defaults: dict = {
+    "scan_results":   None,
+    "cloud_findings": [],
+    "cve_data":       {},
+    "ai_analysis":    None,
+    "scan_log":       [],
+    "attack_paths":   [],
+}
+for _k, _v in _defaults.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# ── Utility helpers ────────────────────────────────────────────────────────────
+
+def log(msg: str) -> None:
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    st.session_state.scan_log.append(f"[{ts}]  {msg}")
 
 
-# ==================== INTERACTIVE MENU ====================
-
-def display_menu():
-    """Display interactive scan mode selection menu"""
-    clear_screen()
-    
-    print(f"""
-{Colors.CYAN}{Colors.BOLD}
-╔════════════════════════════════════════════════════════════════╗
-║                                                                ║
-║     Advanced Network & Station Vulnerability Scanner v2.0      ║
-║                        CyberSwoldier                           ║
-╚════════════════════════════════════════════════════════════════╝
-{Colors.ENDC}
-
-{Colors.BOLD}Select Scan Mode:{Colors.ENDC}
-
-  {Colors.GREEN}1{Colors.ENDC} → {Colors.BOLD}Local System Only{Colors.ENDC}
-       Scan only this computer for vulnerabilities
-       Fast, no network traffic generated
-       Recommended for: Workstation security audit
-
-  {Colors.CYAN}2{Colors.ENDC} → {Colors.BOLD}Network Only{Colors.ENDC}
-       Discover and scan other devices on the network
-       Does not scan local system
-       Recommended for: Network infrastructure assessment
-
-  {Colors.YELLOW}3{Colors.ENDC} → {Colors.BOLD}Full Scan (Local + Network){Colors.ENDC}
-       Comprehensive scan of local system AND network
-       Most thorough option
-       Recommended for: Complete security assessment
-
-  {Colors.BLUE}4{Colors.ENDC} → {Colors.BOLD}Quick Scan{Colors.ENDC}
-       Fast scan with essential checks only
-       Limited depth
-       Recommended for: Quick security overview
-
-  {Colors.RED}0{Colors.ENDC} → {Colors.BOLD}Exit{Colors.ENDC}
-
-{Colors.YELLOW}Note: Some checks require elevated privileges (sudo/admin){Colors.ENDC}
-    """)
-
-
-def get_user_choice() -> str:
-    """
-    Get and validate user's scan mode choice
-    
-    Returns:
-        Valid scan mode choice
-    """
-    while True:
-        try:
-            choice = input(f"{Colors.BOLD}Enter your choice [0-4]: {Colors.ENDC}").strip()
-            
-            if choice == '0':
-                print(f"\n{Colors.YELLOW}Exiting scanner. Stay secure!{Colors.ENDC}\n")
-                sys.exit(0)
-            
-            if choice in ['1', '2', '3', '4']:
-                return choice
-            else:
-                print(f"{Colors.RED}Invalid choice. Please enter 0-4.{Colors.ENDC}")
-                
-        except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Exiting...{Colors.ENDC}\n")
-            sys.exit(0)
-
-
-def get_verbose_preference() -> bool:
-    """
-    Ask user if they want verbose output
-    
-    Returns:
-        True if verbose mode requested
-    """
-    while True:
-        try:
-            response = input(f"\n{Colors.BOLD}Enable verbose output? [y/N]: {Colors.ENDC}").strip().lower()
-            
-            if response in ['y', 'yes']:
-                return True
-            elif response in ['n', 'no', '']:
-                return False
-            else:
-                print(f"{Colors.RED}Please enter 'y' or 'n'{Colors.ENDC}")
-                
-        except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Exiting...{Colors.ENDC}\n")
-            sys.exit(0)
-
-
-# ==================== MAIN ENTRY POINT ====================
-
-def main():
-    """Main application entry point"""
-    
-    # Check Python version
-    if sys.version_info < (3, 6):
-        print(f"{Colors.RED}Error: Python 3.6 or higher required{Colors.ENDC}")
-        sys.exit(1)
-    
-    # Display privilege warning if not running as root/admin
-    if not is_root():
-        print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠ WARNING:{Colors.ENDC}")
-        print(f"{Colors.YELLOW}Not running with elevated privileges.")
-        print("Some security checks will be limited.")
-        print(f"For complete scan, run with sudo (Linux/Mac) or as Administrator (Windows){Colors.ENDC}\n")
-        
-        try:
-            input("Press Enter to continue...")
-        except KeyboardInterrupt:
-            print(f"\n{Colors.YELLOW}Exiting...{Colors.ENDC}\n")
-            sys.exit(0)
-    
-    # Display menu and get user choice
-    display_menu()
-    scan_mode = get_user_choice()
-    
-    # Get verbose preference
-    verbose = get_verbose_preference()
-    
-    # Get thread count for network scanning
-    threads = 50
-    if scan_mode in [ScanMode.NETWORK_ONLY, ScanMode.FULL_SCAN]:
-        try:
-            thread_input = input(f"\n{Colors.BOLD}Number of threads for network scan [50]: {Colors.ENDC}").strip()
-            if thread_input:
-                threads = int(thread_input)
-                if threads < 1 or threads > 200:
-                    print(f"{Colors.YELLOW}Using default: 50 threads{Colors.ENDC}")
-                    threads = 50
-        except:
-            threads = 50
-    
-    print(f"\n{Colors.GREEN}Starting scan...{Colors.ENDC}\n")
-    time.sleep(1)
-    
-    # Create and run scanner
-    scanner = VulnerabilityScanner(
-        scan_mode=scan_mode,
-        verbose=verbose,
-        threads=threads
+def severity_badge(sev: str) -> str:
+    c      = SEVERITY_COLORS.get(sev, "#44444f")
+    text_c = "#0c0c0e" if sev == "LOW" else "#f0f0f0"
+    return (
+        f'<span style="background:{c};color:{text_c};padding:1px 7px;'
+        f'border-radius:2px;font-size:0.66rem;font-weight:600;'
+        f'font-family:\'IBM Plex Mono\',monospace;letter-spacing:1px">'
+        f'{sev}</span>'
     )
-    
+
+
+def cvss_color(score: float) -> str:
+    if score >= 9.0: return SEVERITY_COLORS["CRITICAL"]
+    if score >= 7.0: return SEVERITY_COLORS["HIGH"]
+    if score >= 4.0: return SEVERITY_COLORS["MEDIUM"]
+    return SEVERITY_COLORS["LOW"]
+
+
+def risk_label(score: int) -> str:
+    if score >= 75: return "CRITICAL"
+    if score >= 50: return "HIGH"
+    if score >= 25: return "MEDIUM"
+    return "LOW"
+
+
+def validate_target(target: str) -> tuple:
+    t = target.strip()
+    if not t:
+        return False, "Target cannot be empty."
     try:
-        scanner.run()
-        
-        # Final message
-        print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Scan completed successfully!{Colors.ENDC}")
-        print(f"{Colors.BOLD}Report saved to: vulnerability_report.json{Colors.ENDC}\n")
-        
-    except Exception as e:
-        print(f"\n{Colors.RED}{Colors.BOLD}✗ Scan failed with error:{Colors.ENDC}")
-        print(f"{Colors.RED}{str(e)}{Colors.ENDC}\n")
-        sys.exit(1)
+        ipaddress.ip_network(t, strict=False)
+        return True, ""
+    except ValueError:
+        pass
+    if all(c.isalnum() or c in "-._/" for c in t):
+        return True, ""
+    return False, f"'{t}' does not look like a valid IP, CIDR, or hostname."
+
+# ── Scan engine ────────────────────────────────────────────────────────────────
+
+def simulate_port_scan(target: str, port_range: str, profile: str) -> dict:
+    log(f"Simulation mode  target={target}  profile={profile}")
+    results = {"target": target, "hosts": {}, "scan_time": 0.0, "method": "simulated"}
+    t0 = time.time()
+
+    base_open   = [22, 80, 443]
+    common_open = [3306, 8080]
+    rare_open   = [21, 23, 445, 3389, 5432, 6379, 8443, 9200, 27017, 1433, 5900, 25, 111, 2049, 512]
+    n_rare      = {"Quick": 1, "Standard": 3, "Aggressive": 6}.get(profile, 2)
+    open_ports  = base_open + common_open + random.sample(rare_open, min(n_rare, len(rare_open)))
+
+    services = {
+        21:    ("ftp",           "vsftpd 2.3.4"),
+        22:    ("ssh",           "OpenSSH 7.4p1 Debian"),
+        23:    ("telnet",        "Linux telnetd"),
+        25:    ("smtp",          "Postfix smtpd"),
+        80:    ("http",          "Apache httpd 2.4.49"),
+        111:   ("rpcbind",       "2-4 (RPC #100000)"),
+        443:   ("https",         "nginx/1.18.0 + OpenSSL 1.0.2k"),
+        445:   ("microsoft-ds",  "Samba 4.6.2"),
+        512:   ("exec",          "rsh daemon"),
+        1433:  ("ms-sql-s",      "Microsoft SQL Server 2017"),
+        2049:  ("nfs",           "NFS 3-4 (RPC #100003)"),
+        3306:  ("mysql",         "MySQL 5.7.38"),
+        3389:  ("ms-wbt-server", "MS Terminal Services"),
+        5432:  ("postgresql",    "PostgreSQL 12.3"),
+        5900:  ("vnc",           "VNC protocol 3.8"),
+        6379:  ("redis",         "Redis 6.2.6"),
+        8080:  ("http-proxy",    "Apache Tomcat 9.0.37"),
+        8443:  ("https-alt",     "VMware vCenter 6.7.0"),
+        9200:  ("elasticsearch", "Elasticsearch 7.10.0"),
+        27017: ("mongodb",       "MongoDB 4.4.0"),
+    }
+    os_choices = [
+        "Linux 4.15 (Ubuntu 18.04)",
+        "Linux 5.4 (Ubuntu 20.04)",
+        "Windows Server 2016 10.0.14393",
+        "Windows Server 2019 10.0.17763",
+        "CentOS Linux 7 (Core)",
+        "Debian 10 (Buster)",
+    ]
+    host_info: dict = {
+        "status":   "up",
+        "hostname": f"host-{target.replace('.', '-')}.internal",
+        "os_guess": random.choice(os_choices),
+        "ports":    {},
+    }
+    for port in sorted(open_ports):
+        svc, ver = services.get(port, ("unknown", ""))
+        host_info["ports"][port] = {
+            "state":           "open",
+            "service":         svc,
+            "version":         ver,
+            "vulnerabilities": COMMON_VULNS.get(port, []),
+        }
+        log(f"  [OPEN]  {target}:{port:<6}  {svc}  ({ver})")
+        time.sleep(0.04)
+
+    results["hosts"][target] = host_info
+    results["scan_time"] = round(time.time() - t0, 2)
+    return results
 
 
-if __name__ == "__main__":
-    main()
+def real_nmap_scan(target: str, port_range: str, profile: str) -> dict:
+    nm = nmap.PortScanner()
+    arg_map = {
+        "Quick":      "-sV --version-intensity 3 -T4",
+        "Standard":   "-sV --version-intensity 5 -T3",
+        "Aggressive": "-sV --version-intensity 9 -O -A -T4",
+    }
+    args = arg_map.get(profile, "-sV -T3")
+    try:
+        log(f"nmap {args} -p {port_range} {target}")
+        nm.scan(hosts=target, ports=port_range, arguments=args)
+    except Exception as exc:
+        log(f"nmap error: {exc} — switching to simulation")
+        return simulate_port_scan(target, port_range, profile)
+
+    results: dict = {"target": target, "hosts": {}, "scan_time": 0.0, "method": "nmap"}
+    for host in nm.all_hosts():
+        host_info: dict = {
+            "status":   nm[host].state(),
+            "hostname": nm[host].hostname() or host,
+            "os_guess": "Unknown",
+            "ports":    {},
+        }
+        if nm[host].get("osmatch"):
+            host_info["os_guess"] = nm[host]["osmatch"][0]["name"]
+        for proto in nm[host].all_protocols():
+            for port in nm[host][proto].keys():
+                pd = nm[host][proto][port]
+                if pd["state"] == "open":
+                    version = f"{pd.get('product','')} {pd.get('version','')}".strip()
+                    host_info["ports"][port] = {
+                        "state":           "open",
+                        "service":         pd.get("name", "unknown"),
+                        "version":         version or "unknown",
+                        "vulnerabilities": COMMON_VULNS.get(port, []),
+                    }
+                    log(f"  [OPEN]  {host}:{port:<6}  {pd.get('name','')}  {version}")
+        results["hosts"][host] = host_info
+    return results
+
+
+def cloud_config_scan() -> list:
+    log("Starting cloud configuration audit...")
+    findings = []
+    for check, meta in CLOUD_CHECKS.items():
+        prob = {"CRITICAL": 0.35, "HIGH": 0.45, "MEDIUM": 0.55, "LOW": 0.65}.get(meta["risk"], 0.5)
+        if random.random() < prob:
+            findings.append({
+                "check":       check,
+                "risk":        meta["risk"],
+                "desc":        meta["desc"],
+                "remediation": meta["remediation"],
+            })
+            log(f"  [FINDING]  {check}  [{meta['risk']}]")
+    log(f"Cloud audit complete — {len(findings)} findings")
+    return findings
+
+
+def fetch_nvd_cve(cve_id: str) -> dict:
+    if not REQUESTS_AVAILABLE:
+        return {}
+    try:
+        url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+        r = requests.get(url, timeout=6, headers={"User-Agent": "VulnScanPro/2.0"})
+        if r.status_code == 200:
+            data  = r.json()
+            vulns = data.get("vulnerabilities", [])
+            if vulns:
+                cve_obj      = vulns[0]["cve"]
+                descriptions = cve_obj.get("descriptions", [])
+                desc         = next((d["value"] for d in descriptions if d.get("lang") == "en"), "")
+                metrics      = cve_obj.get("metrics", {})
+                score        = 0.0
+                for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                    if key in metrics:
+                        score = metrics[key][0]["cvssData"].get("baseScore", 0.0)
+                        break
+                references = [ref["url"] for ref in cve_obj.get("references", [])[:3]]
+                return {"description": desc, "nvd_score": score,
+                        "references": references, "fetched": True}
+    except Exception as exc:
+        log(f"  NVD fetch failed for {cve_id}: {exc}")
+    return {}
+
+
+def build_attack_paths(scan_results: dict, cloud_findings: list) -> list:
+    paths: list = []
+    if not scan_results:
+        return paths
+
+    for host, hdata in scan_results.get("hosts", {}).items():
+        ports  = hdata.get("ports", {})
+        scored = []
+        for port, pdata in ports.items():
+            for v in pdata.get("vulnerabilities", []):
+                if v["severity"] in ("CRITICAL", "HIGH"):
+                    scored.append((port, pdata, v))
+        scored.sort(key=lambda x: x[2]["cvss"], reverse=True)
+        if not scored:
+            continue
+
+        entry_port, entry_pdata, entry_vuln = scored[0]
+        steps = [
+            {"node": "INTERNET",            "type": "external", "label": "Attacker — public network"},
+            {"node": f"{host}:{entry_port}", "type": "entry",   "label": f"Initial access via {entry_pdata['service'].upper()} — {entry_vuln['cve']}"},
+        ]
+        path_vulns = [entry_vuln]
+
+        if len(scored) > 1:
+            lat_port, lat_pdata, lat_vuln = scored[1]
+            steps.append({
+                "node":  f"{host}:{lat_port}",
+                "type":  "lateral",
+                "label": f"Privilege escalation / lateral move — {lat_vuln['cve']}",
+            })
+            path_vulns.append(lat_vuln)
+
+        steps.append({"node": "CROWN JEWEL", "type": "target",
+                      "label": "Data exfiltration / persistence / ransomware staging"})
+
+        max_cvss   = max(v["cvss"] for v in path_vulns)
+        likelihood = min(95, int(max_cvss * 9.2 + random.randint(-5, 5)))
+
+        paths.append({
+            "id":         f"PATH-{host.replace('.', '')}",
+            "host":       host,
+            "risk":       "CRITICAL" if max_cvss >= 9.0 else "HIGH",
+            "steps":      steps,
+            "vulns_used": path_vulns,
+            "likelihood": likelihood,
+        })
+
+    for cf in cloud_findings:
+        if cf["risk"] not in ("CRITICAL", "HIGH"):
+            continue
+        paths.append({
+            "id":   f"PATH-CLOUD-{len(paths)}",
+            "host": "Cloud Infrastructure",
+            "risk": cf["risk"],
+            "steps": [
+                {"node": "INTERNET",        "type": "external", "label": "Unauthenticated public access"},
+                {"node": cf["check"],        "type": "entry",    "label": f"Misconfiguration: {cf['check']}"},
+                {"node": "CLOUD RESOURCES", "type": "target",   "label": "Account takeover / data access / persistence"},
+            ],
+            "vulns_used": [{"cve": "MISCONFIG", "desc": cf["desc"], "cvss": 8.5, "severity": cf["risk"]}],
+            "likelihood": random.randint(50, 88),
+        })
+
+    return paths
+
+# ── AI analysis ────────────────────────────────────────────────────────────────
+
+def ai_risk_analysis(scan_results: dict, cloud_findings: list,
+                     attack_paths: list, api_key: str) -> str:
+    if not ANTHROPIC_AVAILABLE or not api_key:
+        return ""
+
+    crit_vulns: list = []
+    if scan_results:
+        for host, hdata in scan_results.get("hosts", {}).items():
+            for port, pdata in hdata.get("ports", {}).items():
+                for v in pdata.get("vulnerabilities", []):
+                    if v["severity"] in ("CRITICAL", "HIGH"):
+                        crit_vulns.append({
+                            "host": host, "port": port,
+                            "service": pdata["service"],
+                            "cve": v["cve"], "desc": v["desc"],
+                            "cvss": v["cvss"], "severity": v["severity"],
+                        })
+
+    summary = {
+        "scan_method":       scan_results.get("method", "unknown") if scan_results else "none",
+        "hosts_scanned":     len(scan_results.get("hosts", {})) if scan_results else 0,
+        "total_open_ports":  sum(len(h["ports"]) for h in scan_results.get("hosts", {}).values()) if scan_results else 0,
+        "critical_high_vulns": crit_vulns,
+        "cloud_findings_critical_high": [
+            {"check": f["check"], "risk": f["risk"], "desc": f["desc"]}
+            for f in cloud_findings if f["risk"] in ("CRITICAL", "HIGH")
+        ],
+        "attack_paths_count": len(attack_paths),
+        "highest_cvss": max((v["cvss"] for v in crit_vulns), default=0.0),
+    }
+
+    prompt = f"""You are a senior penetration tester and security architect.
+Analyse the following vulnerability assessment output and produce a structured report.
+
+SCAN SUMMARY (JSON):
+{json.dumps(summary, indent=2)}
+
+Produce the following sections using markdown:
+
+## Executive Summary
+3-4 sentences — non-technical, suitable for a CISO or board audience.
+
+## Top 3 Critical Risks
+For each: risk name, business impact, and exploitability context.
+
+## Most Likely Attack Scenario
+Walk through the most probable end-to-end attack chain given the findings.
+Be specific about CVEs and services involved.
+
+## Remediation Roadmap
+Three time-boxed action lists:
+- **Immediate (24-72 hours)** — things that must be done now
+- **Short-term (30 days)** — structural fixes
+- **Strategic (90 days)** — architectural hardening
+
+## Overall Risk Score
+Score: XX/100 — with a one-sentence rationale.
+(Use: 0-24=LOW, 25-49=MEDIUM, 50-74=HIGH, 75-100=CRITICAL)
+
+Be concise, specific, and actionable. Do not pad with generic advice."""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text
+    except anthropic.AuthenticationError:
+        return "**Authentication error** — check your Anthropic API key."
+    except anthropic.RateLimitError:
+        return "**Rate limit reached** — retry in a moment."
+    except Exception as exc:
+        return f"**AI analysis error:** {exc}"
+
+# ── Plotly charts ──────────────────────────────────────────────────────────────
+
+_BG      = "rgba(0,0,0,0)"
+_GRID    = "#2a2a32"
+_TEXT    = "#d4d4d8"
+_DIM     = "#6b6b78"
+_MONO    = "IBM Plex Mono"
+
+
+def _base_layout(**kwargs) -> dict:
+    return dict(
+        paper_bgcolor=_BG, plot_bgcolor=_BG,
+        font=dict(color=_TEXT, family=_MONO),
+        margin=dict(t=16, b=16, l=16, r=16),
+        **kwargs,
+    )
+
+
+def render_severity_donut(findings_by_sev: dict) -> None:
+    if not PLOTLY_AVAILABLE:
+        return
+    ordered = [(s, findings_by_sev[s]) for s in SEV_ORDER if s in findings_by_sev]
+    labels  = [o[0] for o in ordered]
+    values  = [o[1] for o in ordered]
+    colors  = [SEVERITY_COLORS[l] for l in labels]
+    total   = sum(values)
+
+    fig = go.Figure(go.Pie(
+        labels=labels, values=values, hole=0.68,
+        marker=dict(colors=colors, line=dict(color="#0c0c0e", width=2)),
+        textinfo="label+value",
+        textfont=dict(family=_MONO, size=10, color=_TEXT),
+        hovertemplate="<b>%{label}</b><br>Count: %{value}<br>%{percent}<extra></extra>",
+    ))
+    fig.update_layout(**_base_layout(height=300,
+        legend=dict(font=dict(color=_TEXT, family=_MONO, size=10))))
+    fig.add_annotation(text="TOTAL", x=0.5, y=0.57,
+        font=dict(size=9, color=_DIM, family=_MONO), showarrow=False)
+    fig.add_annotation(text=str(total), x=0.5, y=0.44,
+        font=dict(size=30, color="#7df9ff", family=_MONO), showarrow=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_cvss_bar(vulns: list) -> None:
+    if not PLOTLY_AVAILABLE or not vulns:
+        return
+    top     = sorted(vulns, key=lambda v: v["cvss"], reverse=True)[:12]
+    cve_ids = [v["cve"] for v in top]
+    scores  = [v["cvss"] for v in top]
+    colors  = [cvss_color(s) for s in scores]
+
+    fig = go.Figure(go.Bar(
+        x=scores, y=cve_ids, orientation="h",
+        marker=dict(color=colors, line=dict(color="#0c0c0e", width=1)),
+        text=[f"{s:.1f}" for s in scores],
+        textposition="outside",
+        textfont=dict(color=_TEXT, family=_MONO, size=9),
+        hovertemplate="<b>%{y}</b><br>CVSS: %{x}<extra></extra>",
+    ))
+    fig.update_layout(**_base_layout(
+        height=max(220, len(top) * 26),
+        xaxis=dict(range=[0, 11.5], color=_DIM, gridcolor=_GRID,
+                   tickfont=dict(family=_MONO, size=8)),
+        yaxis=dict(color=_TEXT, tickfont=dict(family=_MONO, size=8), autorange="reversed"),
+    ))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_risk_gauge(score: int) -> None:
+    if not PLOTLY_AVAILABLE:
+        return
+    color = (
+        SEVERITY_COLORS["CRITICAL"] if score >= 75 else
+        SEVERITY_COLORS["HIGH"]     if score >= 50 else
+        SEVERITY_COLORS["MEDIUM"]   if score >= 25 else
+        SEVERITY_COLORS["LOW"]
+    )
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number={"font": {"color": color, "family": _MONO, "size": 34}},
+        gauge={
+            "axis":       {"range": [0, 100], "tickcolor": _DIM,
+                           "tickfont": {"family": _MONO, "size": 8}},
+            "bar":        {"color": color, "thickness": 0.22},
+            "bgcolor":    "#17171b",
+            "borderwidth":1,
+            "bordercolor":_GRID,
+            "steps": [
+                {"range": [0,  25],  "color": "#111114"},
+                {"range": [25, 50],  "color": "#141416"},
+                {"range": [50, 75],  "color": "#161618"},
+                {"range": [75, 100], "color": "#18161a"},
+            ],
+            "threshold": {"line": {"color": color, "width": 2},
+                          "thickness": 0.8, "value": score},
+        },
+    ))
+    fig.update_layout(**_base_layout(height=220,
+        annotations=[dict(text=risk_label(score), x=0.5, y=0.22,
+            showarrow=False, font=dict(color=color, size=12, family=_MONO))]))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_attack_path_graph(path: dict) -> None:
+    if not PLOTLY_AVAILABLE:
+        return
+    steps = path["steps"]
+    n     = len(steps)
+    xs    = list(range(n))
+    node_colors = {
+        "external": SEVERITY_COLORS["CRITICAL"],
+        "entry":    SEVERITY_COLORS["HIGH"],
+        "lateral":  SEVERITY_COLORS["MEDIUM"],
+        "target":   "#7df9ff",
+    }
+    fig = go.Figure()
+    for i in range(n - 1):
+        fig.add_shape(type="line",
+            x0=xs[i], y0=0, x1=xs[i+1], y1=0,
+            line=dict(color=_GRID, width=2, dash="dot"))
+        fig.add_annotation(
+            x=(xs[i] + xs[i+1]) / 2, y=0.12,
+            text="->", showarrow=False,
+            font=dict(color=_DIM, size=11, family=_MONO))
+    for i, step in enumerate(steps):
+        c = node_colors.get(step["type"], _DIM)
+        fig.add_trace(go.Scatter(
+            x=[xs[i]], y=[0],
+            mode="markers+text",
+            marker=dict(size=18, color=c, symbol="square",
+                        line=dict(color="#0c0c0e", width=2)),
+            text=[step["node"]],
+            textposition="bottom center",
+            textfont=dict(family=_MONO, size=8, color=_TEXT),
+            hovertext=step["label"],
+            hoverinfo="text",
+            showlegend=False,
+        ))
+    fig.update_layout(**_base_layout(
+        height=148,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False, range=[-0.6, 0.55]),
+    ))
+    st.plotly_chart(fig, use_container_width=True)
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.markdown(
+        '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:1rem;'
+        'font-weight:600;letter-spacing:4px;color:#7df9ff;'
+        'text-shadow:0 0 14px rgba(125,249,255,0.38);margin:0 0 2px">'
+        'VULNSCAN PRO</p>'
+        '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.6rem;'
+        'letter-spacing:2px;color:#44444f;margin:0 0 12px">v2.0  AI-ASSISTED  ASSESSMENT</p>',
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    st.markdown("### Target")
+    target_input = st.text_input(
+        "target", value="192.168.1.1",
+        help="Examples: 10.0.0.1  |  192.168.0.0/24  |  example.com",
+        label_visibility="collapsed",
+        placeholder="IP / CIDR / Hostname",
+    )
+    port_range = st.text_input(
+        "ports", value="22,80,443,445,3306,3389,8080",
+        help="Comma-separated or range: 1-1024, 22,80,443",
+        label_visibility="collapsed",
+        placeholder="Port range",
+    )
+    scan_profile = st.selectbox(
+        "Profile", ["Quick", "Standard", "Aggressive"],
+        help="Quick: fast service detection | Standard: version scan | Aggressive: OS + scripts",
+    )
+    st.divider()
+
+    st.markdown("### Modules")
+    enable_cloud = st.checkbox("Cloud config audit", value=True)
+    enable_ai    = st.checkbox("AI risk analysis",   value=True)
+    st.divider()
+
+    st.markdown("### API Key")
+    api_key = st.text_input(
+        "key", type="password",
+        value=os.environ.get("ANTHROPIC_API_KEY", ""),
+        help="Required for AI analysis. Reads ANTHROPIC_API_KEY env var automatically.",
+        label_visibility="collapsed",
+        placeholder="sk-ant-...",
+    )
+    st.divider()
+
+    st.markdown("### Environment")
+
+    def _dep(name: str, ok: bool) -> str:
+        c = "#7df9ff" if ok else SEVERITY_COLORS["MEDIUM"]
+        s = "OK" if ok else "MISSING"
+        return (
+            f'<span style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
+            f'color:{c}">{name:<12} {s}</span>'
+        )
+
+    st.markdown(
+        _dep("nmap",      NMAP_AVAILABLE)     + "<br>" +
+        _dep("plotly",    PLOTLY_AVAILABLE)    + "<br>" +
+        _dep("anthropic", ANTHROPIC_AVAILABLE) + "<br>" +
+        _dep("networkx",  NX_AVAILABLE),
+        unsafe_allow_html=True,
+    )
+    if not NMAP_AVAILABLE:
+        st.info(
+            "nmap not found — running simulation mode.\n\n"
+            "Install: `pip install python-nmap`\nand ensure the nmap binary is in PATH."
+        )
+    st.divider()
+    scan_btn = st.button("LAUNCH SCAN", use_container_width=True)
+
+# ── Header ─────────────────────────────────────────────────────────────────────
+
+st.markdown(
+    '<h1 style="margin-bottom:0">VULNSCAN PRO</h1>'
+    '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
+    'letter-spacing:3px;color:#44444f;margin-top:2px">'
+    'AI-ASSISTED VULNERABILITY ASSESSMENT  //  NETWORK  CLOUD  CVE  ATTACK-PATH  AI-SCORING'
+    '</p>',
+    unsafe_allow_html=True,
+)
+
+# ── Run scan ───────────────────────────────────────────────────────────────────
+
+if scan_btn:
+    valid, err = validate_target(target_input)
+    if not valid:
+        st.error(f"Invalid target: {err}")
+        st.stop()
+
+    for k, v in _defaults.items():
+        st.session_state[k] = [] if isinstance(v, list) else ({} if isinstance(v, dict) else None)
+
+    prog = st.progress(0, text="Initialising scan engine...")
+    log(f"=== SCAN START  target={target_input}  ports={port_range}  profile={scan_profile} ===")
+
+    prog.progress(5, text="Phase 1/5 — Network discovery and port scan")
+    if NMAP_AVAILABLE:
+        results = real_nmap_scan(target_input, port_range, scan_profile)
+    else:
+        results = simulate_port_scan(target_input, port_range, scan_profile)
+    st.session_state.scan_results = results
+    prog.progress(30, text="Phase 2/5 — CVE correlation and NVD enrichment")
+
+    all_cves: set = set()
+    for h in results.get("hosts", {}).values():
+        for pd in h.get("ports", {}).values():
+            for v in pd.get("vulnerabilities", []):
+                all_cves.add(v["cve"])
+    log(f"Correlating {len(all_cves)} CVEs — fetching up to 6 from NVD...")
+    for cve in list(all_cves)[:6]:
+        data = fetch_nvd_cve(cve)
+        if data:
+            st.session_state.cve_data[cve] = data
+            log(f"  [NVD]  {cve}  CVSS={data.get('nvd_score','?')}")
+        time.sleep(0.15)
+
+    prog.progress(55, text="Phase 3/5 — Cloud configuration audit")
+    cloud_findings = cloud_config_scan() if enable_cloud else []
+    st.session_state.cloud_findings = cloud_findings
+    prog.progress(72, text="Phase 4/5 — Attack path modeling")
+
+    paths = build_attack_paths(results, cloud_findings)
+    st.session_state.attack_paths = paths
+    log(f"Attack path modeling complete — {len(paths)} paths")
+    prog.progress(88, text="Phase 5/5 — AI risk analysis")
+
+    if enable_ai and api_key:
+        log("Calling Claude AI for risk scoring and remediation plan...")
+        st.session_state.ai_analysis = ai_risk_analysis(results, cloud_findings, paths, api_key)
+        log("AI analysis complete")
+    elif enable_ai and not api_key:
+        log("AI analysis skipped — no API key")
+
+    prog.progress(100, text="Scan complete")
+    log(f"=== SCAN COMPLETE  method={results.get('method','?')}  time={results.get('scan_time','?')}s ===")
+    st.success(
+        f"Scan complete — {len(results.get('hosts', {}))} host(s)  "
+        f"in {results.get('scan_time', 0):.2f}s  "
+        f"({results.get('method','?')} mode)"
+    )
+
+# ── Dashboard ──────────────────────────────────────────────────────────────────
+
+if st.session_state.scan_results:
+    scan   = st.session_state.scan_results
+    clouds = st.session_state.cloud_findings
+    paths  = st.session_state.attack_paths
+
+    all_vulns: list      = []
+    sev_counts: dict     = defaultdict(int)
+    for hdata in scan.get("hosts", {}).values():
+        for pdata in hdata.get("ports", {}).values():
+            for v in pdata.get("vulnerabilities", []):
+                all_vulns.append(v)
+                sev_counts[v["severity"]] += 1
+    for cf in clouds:
+        sev_counts[cf["risk"]] += 1
+
+    total_open_ports = sum(len(h["ports"]) for h in scan.get("hosts", {}).values())
+    total_vulns      = sum(sev_counts.values())
+    risk_score       = min(100, int(
+        sev_counts.get("CRITICAL", 0) * 22 +
+        sev_counts.get("HIGH",     0) * 9  +
+        sev_counts.get("MEDIUM",   0) * 3  +
+        sev_counts.get("LOW",      0) * 1
+    ))
+
+    st.markdown("---")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Hosts",        len(scan.get("hosts", {})))
+    c2.metric("Open Ports",   total_open_ports)
+    c3.metric("Findings",     total_vulns)
+    c4.metric("Critical",     sev_counts.get("CRITICAL", 0))
+    c5.metric("High",         sev_counts.get("HIGH", 0))
+    c6.metric("Attack Paths", len(paths))
+    st.markdown("---")
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "HOSTS / PORTS",
+        "VULNERABILITIES",
+        "CLOUD CONFIG",
+        "ATTACK PATHS",
+        "AI ANALYSIS",
+        "SCAN LOG",
+    ])
+
+    # ── Tab 1: Hosts ───────────────────────────────────────────────────────────
+    with tab1:
+        st.markdown("## Discovered Hosts")
+        for host, hdata in scan.get("hosts", {}).items():
+            open_ports = hdata.get("ports", {})
+            vuln_count = sum(len(p.get("vulnerabilities", [])) for p in open_ports.values())
+            crit_count = sum(
+                1 for p in open_ports.values()
+                for v in p.get("vulnerabilities", []) if v["severity"] == "CRITICAL"
+            )
+            label = (
+                f"{host}  //  {hdata.get('os_guess','Unknown OS')}  //  "
+                f"{len(open_ports)} ports  //  {vuln_count} vulns  "
+                f"({crit_count} CRITICAL)"
+            )
+            with st.expander(label):
+                ca, cb = st.columns(2)
+                with ca:
+                    st.markdown(f"**Hostname:** `{hdata.get('hostname','N/A')}`")
+                    st.markdown(f"**OS guess:** `{hdata.get('os_guess','N/A')}`")
+                with cb:
+                    st.markdown(f"**Status:** `{hdata.get('status','up')}`")
+                    st.markdown(f"**Method:** `{scan.get('method','?')}`")
+                st.markdown("##### Port map")
+                for port in sorted(open_ports.keys()):
+                    pd     = open_ports[port]
+                    badges = " ".join(severity_badge(v["severity"]) for v in pd.get("vulnerabilities", []))
+                    nvd_ref = ""
+                    for v in pd.get("vulnerabilities", []):
+                        enriched = st.session_state.cve_data.get(v["cve"], {})
+                        if enriched.get("references"):
+                            nvd_ref = enriched["references"][0]
+                            break
+                    ref_html = (
+                        f' <a href="{nvd_ref}" target="_blank" '
+                        f'style="color:#44444f;font-size:0.68rem;text-decoration:none">NVD</a>'
+                        if nvd_ref else ""
+                    )
+                    st.markdown(
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.76rem;'
+                        f'padding:3px 0;border-bottom:1px solid #1e1e24">'
+                        f'<span style="color:#7df9ff;display:inline-block;width:50px">{port}</span>'
+                        f'<span style="color:#6dba8a;display:inline-block;width:138px">{pd["service"]}</span>'
+                        f'<span style="color:#6b6b78;display:inline-block;width:255px">{pd["version"]}</span>'
+                        f'{badges}{ref_html}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+    # ── Tab 2: Vulnerabilities ─────────────────────────────────────────────────
+    with tab2:
+        st.markdown("## Vulnerability Intelligence")
+        cd, cg, cb2 = st.columns([1.2, 1, 2])
+        with cd:
+            if PLOTLY_AVAILABLE and sev_counts:
+                render_severity_donut(dict(sev_counts))
+        with cg:
+            if PLOTLY_AVAILABLE:
+                render_risk_gauge(risk_score)
+        with cb2:
+            if PLOTLY_AVAILABLE and all_vulns:
+                render_cvss_bar(all_vulns)
+
+        st.markdown("##### Findings")
+        st.markdown(
+            '<div style="display:grid;grid-template-columns:180px 90px 58px 1fr;'
+            'gap:8px;padding:4px 8px;border-bottom:1px solid #2a2a32;'
+            'font-family:\'IBM Plex Mono\',monospace;font-size:0.62rem;'
+            'letter-spacing:1px;color:#44444f">'
+            '<span>CVE ID</span><span>SEVERITY</span><span>CVSS</span><span>DESCRIPTION</span></div>',
+            unsafe_allow_html=True,
+        )
+        for v in sorted(all_vulns, key=lambda x: x["cvss"], reverse=True):
+            enriched = st.session_state.cve_data.get(v["cve"], {})
+            desc     = enriched.get("description", v["desc"])
+            score    = enriched.get("nvd_score", v["cvss"])
+            sc       = cvss_color(score)
+            st.markdown(
+                f'<div style="display:grid;grid-template-columns:180px 90px 58px 1fr;'
+                f'gap:8px;padding:5px 8px;border-bottom:1px solid #1e1e24;'
+                f'font-family:\'IBM Plex Mono\',monospace;font-size:0.74rem">'
+                f'<span style="color:#7df9ff">{v["cve"]}</span>'
+                f'<span>{severity_badge(v["severity"])}</span>'
+                f'<span style="color:{sc};font-weight:600">{score:.1f}</span>'
+                f'<span style="color:#6b6b78">{desc[:135]}{"..." if len(desc)>135 else ""}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Tab 3: Cloud ───────────────────────────────────────────────────────────
+    with tab3:
+        st.markdown("## Cloud Configuration Audit")
+        if not clouds:
+            st.success("No cloud misconfigurations detected.")
+        else:
+            ordered_clouds = sorted(
+                clouds,
+                key=lambda x: SEV_ORDER.index(x["risk"]) if x["risk"] in SEV_ORDER else 99,
+            )
+            st.markdown(
+                '<div style="display:grid;grid-template-columns:230px 86px 1fr 1fr;'
+                'gap:8px;padding:4px 8px;border-bottom:1px solid #2a2a32;'
+                'font-family:\'IBM Plex Mono\',monospace;font-size:0.62rem;'
+                'letter-spacing:1px;color:#44444f">'
+                '<span>CHECK</span><span>RISK</span><span>DESCRIPTION</span><span>REMEDIATION</span></div>',
+                unsafe_allow_html=True,
+            )
+            for cf in ordered_clouds:
+                st.markdown(
+                    f'<div style="display:grid;grid-template-columns:230px 86px 1fr 1fr;'
+                    f'gap:8px;padding:6px 8px;border-bottom:1px solid #1e1e24;'
+                    f'font-family:\'IBM Plex Mono\',monospace;font-size:0.74rem">'
+                    f'<span style="color:#d4d4d8;font-weight:600">{cf["check"]}</span>'
+                    f'<span>{severity_badge(cf["risk"])}</span>'
+                    f'<span style="color:#6b6b78">{cf["desc"]}</span>'
+                    f'<span style="color:#6dba8a;font-size:0.68rem">{cf["remediation"]}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # ── Tab 4: Attack Paths ────────────────────────────────────────────────────
+    with tab4:
+        st.markdown("## Attack Path Modeling")
+        if not paths:
+            st.info("No high-risk attack paths identified from current findings.")
+        else:
+            st.markdown(
+                f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
+                f'color:#6b6b78">{len(paths)} attack chain(s) modelled — '
+                f'public internet to target asset.</p>',
+                unsafe_allow_html=True,
+            )
+            for path in sorted(paths, key=lambda p: p["likelihood"], reverse=True):
+                header = (
+                    f'{path["id"]}  //  {path["host"]}  //  '
+                    f'risk: {path["risk"]}  //  likelihood: {path["likelihood"]}%'
+                )
+                with st.expander(header):
+                    render_attack_path_graph(path)
+                    st.markdown("**Vulnerabilities in chain:**")
+                    for v in path["vulns_used"]:
+                        st.markdown(
+                            f'- `{v["cve"]}` &nbsp;{severity_badge(v["severity"])}&nbsp; '
+                            f'CVSS **{v["cvss"]}** — {v["desc"]}',
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown("**Attack steps:**")
+                    for i, step in enumerate(path["steps"]):
+                        st.markdown(
+                            f'<p style="font-family:\'IBM Plex Mono\',monospace;'
+                            f'font-size:0.76rem;color:#d4d4d8;margin:2px 0">'
+                            f'<span style="color:#44444f">{i+1}.</span>  '
+                            f'<span style="color:#7df9ff">{step["node"]}</span>  '
+                            f'<span style="color:#6b6b78">— {step["label"]}</span></p>',
+                            unsafe_allow_html=True,
+                        )
+
+    # ── Tab 5: AI Analysis ─────────────────────────────────────────────────────
+    with tab5:
+        st.markdown("## AI Risk Analysis")
+        if st.session_state.ai_analysis:
+            st.markdown(st.session_state.ai_analysis)
+        elif not api_key:
+            st.info(
+                "Enter your Anthropic API key in the sidebar to enable AI-powered "
+                "risk scoring, attack scenario narrative, and remediation planning."
+            )
+        else:
+            st.info("Run a scan with AI Analysis enabled to see the report.")
+
+    # ── Tab 6: Scan Log ────────────────────────────────────────────────────────
+    with tab6:
+        st.markdown("## Scan Log")
+        st.code("\n".join(st.session_state.scan_log), language="bash")
+
+# ── Welcome screen ─────────────────────────────────────────────────────────────
+else:
+    st.markdown(
+        '<div style="border:1px solid #2a2a32;border-radius:2px;'
+        'padding:48px 40px;margin-top:16px;background:#111114;text-align:center">'
+        '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.6rem;'
+        'letter-spacing:4px;color:#44444f;margin:0 0 8px">STATUS</p>'
+        '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:1.35rem;'
+        'letter-spacing:6px;color:#7df9ff;'
+        'text-shadow:0 0 18px rgba(125,249,255,0.32);margin:0 0 16px;font-weight:600">'
+        'READY TO SCAN</p>'
+        '<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;'
+        'letter-spacing:1px;color:#6b6b78;max-width:480px;margin:0 auto;line-height:1.8">'
+        'Configure target and modules in the sidebar.<br>'
+        'Press LAUNCH SCAN to begin assessment.<br><br>'
+        'Network discovery  //  CVE intelligence  //  Cloud audit<br>'
+        'Attack path modeling  //  AI risk scoring'
+        '</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    features = [
+        ("NETWORK SCAN",
+         "nmap-driven host discovery, OS detection, and service fingerprinting. "
+         "Graceful fallback to simulation mode when nmap is unavailable."),
+        ("CVE INTELLIGENCE",
+         "Correlates open ports against an expanded CVE database covering 20+ service types. "
+         "Enriches findings with live CVSS scores from the NVD 2.0 API."),
+        ("CLOUD AUDIT",
+         "14 AWS misconfiguration checks: public S3, IAM wildcards, open security groups, "
+         "missing MFA, GuardDuty status, IMDSv1 exposure, and more."),
+        ("ATTACK PATHS",
+         "Models end-to-end attack chains ranked by CVSS and exploitability. "
+         "Shows how vulnerabilities chain from internet exposure to crown jewel assets."),
+        ("AI ANALYSIS",
+         "Claude produces an executive summary, top-3 risk breakdown, most likely "
+         "attack scenario, and a 24h / 30d / 90d remediation roadmap."),
+        ("AUDIT TRAIL",
+         "Full millisecond-precision scan log for compliance documentation, "
+         "incident response timelines, and post-assessment review."),
+    ]
+    cols = st.columns(3)
+    for i, (title, desc) in enumerate(features):
+        with cols[i % 3]:
+            st.markdown(
+                f'<div style="background:#17171b;border:1px solid #2a2a32;'
+                f'border-radius:2px;padding:16px;margin-top:12px">'
+                f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.68rem;'
+                f'font-weight:600;letter-spacing:2px;color:#7df9ff;margin:0 0 6px">{title}</p>'
+                f'<p style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;'
+                f'color:#6b6b78;line-height:1.65;margin:0">{desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
