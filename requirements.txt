@@ -1,0 +1,6 @@
+streamlit
+python-nmap
+requests
+anthropic
+plotly
+networkx
