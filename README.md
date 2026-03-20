@@ -1,208 +1,202 @@
-A professional-grade, interactive security assessment tool for comprehensive vulnerability scanning of local systems and network infrastructure. Written in pure Python with zero external dependencies.
+# LACUNA
 
-# Features
+> The gap in your defences. Found before they find it.
 
-### Core Capabilities
+LACUNA is an AI-assisted vulnerability assessment platform built with Streamlit and the Anthropic Claude API. It combines network scanning, CVE intelligence, cloud misconfiguration auditing, attack path modeling, and AI-powered risk scoring into a single dark-terminal dashboard.
 
-| Feature | Description |
-|---------|-------------|
-|  **Interactive Menu** | Choose from 4 scan modes with a beautiful TUI - no complex commands to remember |
-|  **Multi-threaded** | Scan hundreds of hosts simultaneously with configurable thread pools (default: 50 threads) |
-|  **Risk Scoring** | Get an instant 0-100 security score - know your security posture at a glance |
-|  **Zero Dependencies** | Pure Python stdlib - no `pip install`, no virtual environments, just run it |
-|  **Cross-Platform** | One script works everywhere: Linux, Windows, macOS - write once, scan anywhere |
-|  **Actionable Reports** | Every vulnerability includes detailed remediation steps - not just detection |
-|  **Real-time Output** | Color-coded severity levels with live progress - watch your scan unfold |
+---
 
-### Local System Security Checks (25+ Tests)
+## Features
 
-| Category | Checks |
-|----------|--------|
-| **System Updates** | OS version, available patches, outdated packages |
-| **Network Security** | Open ports, firewall status, weak protocols (Telnet, FTP) |
-| **Access Control** | User accounts with UID 0, excessive login users, password policies |
-| **Services** | Running risky services (Telnet, RSH, FTP), SSH configuration |
-| **Data Protection** | Disk encryption (LUKS/BitLocker), file permissions on critical files |
-| **Software** | Antivirus presence, vulnerable software, system hardening (SELinux/AppArmor) |
-| **Network Shares** | Samba, NFS, Windows shares exposure |
+**Network and Port Scanning**
+Drives nmap for host discovery, OS detection, and service fingerprinting across any IP, CIDR range, or hostname. Falls back to a realistic simulation mode automatically when nmap is not available, so the tool is always runnable.
 
-### Network Discovery & Scanning
+**CVE Intelligence**
+Correlates discovered open ports against an embedded database of 40+ known CVEs across 21 service types. Enriches findings in real time via the NVD 2.0 API — pulling live CVSS scores, descriptions, and reference links with no API key required.
 
-- **Automatic Subnet Detection** - Identifies your network range (e.g., 192.168.1.0/24)
-- **Host Discovery** - Multi-threaded ping sweep to find active devices
-- **Port Scanning** - Scans 22+ common ports on each discovered host
-- **Service Identification** - Detects running services and versions
-- **Banner Grabbing** - Retrieves service banners for version analysis
-- **Database Exposure** - Checks for exposed MySQL, PostgreSQL, MongoDB, Redis
-- **Vulnerability Mapping** - Cross-references findings with known CVEs
+**Cloud Configuration Audit**
+Runs 14 AWS misconfiguration checks covering public S3 buckets, IAM wildcard policies, open security groups, missing MFA enforcement, disabled CloudTrail, unencrypted storage, public RDS snapshots, disabled GuardDuty, IMDSv1 exposure, and more. Each finding includes a specific remediation step.
 
-## Quick Start
+**Attack Path Modeling**
+Chains vulnerabilities into end-to-end attack paths from public internet to crown jewel assets. Paths are ranked by exploitability likelihood derived from CVSS scores, with lateral movement and privilege escalation steps modeled where multiple high-severity findings exist on the same host.
+
+**AI Risk Analysis**
+Sends a structured scan summary to Claude and receives back an executive-level report containing an overall risk score, top three critical risks with business impact, the most likely attack scenario with specific CVE references, and a time-boxed remediation roadmap (24 hours, 30 days, 90 days).
+
+**Audit Trail**
+Every scan action is logged with millisecond-precision timestamps, suitable for compliance documentation and incident response timelines.
+
+---
+
+## Requirements
+
+### Python packages
+
+```
+pip install -r requirements.txt
+```
+
+| Package | Purpose | Required |
+|---|---|---|
+| `streamlit` | Web dashboard framework | Yes |
+| `python-nmap` | Python wrapper for the nmap binary | No — simulation mode fallback |
+| `requests` | NVD 2.0 API calls for CVE enrichment | No — falls back to embedded data |
+| `anthropic` | Claude API for AI risk analysis | No — AI tab disabled without key |
+| `plotly` | Interactive charts and graphs | No — text fallback |
+| `networkx` | Reserved for future graph export | No |
+
+### System dependency
+
+nmap must be installed as a system binary. `python-nmap` is a wrapper — it cannot function without the underlying binary.
+
+| OS | Command |
+|---|---|
+| Debian / Ubuntu | `sudo apt install nmap` |
+| macOS | `brew install nmap` |
+| Windows | [nmap.org/download](https://nmap.org/download.html#windows) |
+
+If nmap is not found at runtime, LACUNA switches to simulation mode silently.
+
+### Anthropic API key
+
+Required only for the AI Analysis tab. The key is never stored — it is read from the sidebar input or from the environment variable.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
+## Deploying on Streamlit Cloud
+
+LACUNA is ready for one-click deployment on [Streamlit Community Cloud](https://streamlit.io/cloud).
+
+The repository includes both files Streamlit Cloud needs:
+
+- `requirements.txt` — Python packages installed via pip
+- `packages.txt` — installs the `nmap` system binary via apt so real scans work in the cloud environment
+
+Steps:
+
+1. Fork or push this repository to your GitHub account.
+2. Go to [share.streamlit.io](https://share.streamlit.io) and connect your repo.
+3. Set the main file to `lacuna.py`.
+4. Add `ANTHROPIC_API_KEY` as a secret in the Streamlit Cloud dashboard if you want AI analysis enabled by default.
+5. Deploy.
+
+---
+
+## Local installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/vulnscanner.git
-cd vulnscanner
+git clone https://github.com/YOUR_USERNAME/lacuna.git
+cd lacuna
 
-# Run with elevated privileges (recommended)
-sudo python3 vulnscanner.py
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# Or without sudo (limited checks)
-python3 vulnscanner.py
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install nmap binary (Linux)
+sudo apt install nmap
+
+# Run
+streamlit run lacuna.py
 ```
 
-That's it! No dependencies to install. The interactive menu will guide you through the rest.
-
-## Scan Modes
-
-### Mode 1: Local System Only 
-
-**Best for:** Workstation security audits, compliance checks
-
-```
-✓ Fast execution (30-60 seconds)
-✓ No network traffic generated
-✓ Comprehensive local security assessment
-✓ Perfect for individual machine hardening
-```
-
-**Checks performed:**
-- OS version & patches
-- Open ports & services
-- Firewall configuration
-- User accounts & passwords
-- SSH settings
-- File permissions
-- Antivirus status
-- Disk encryption
+The dashboard opens at `http://localhost:8501`.
 
 ---
 
-### Mode 2: Network Only 
+## Usage
 
-**Best for:** Network infrastructure assessment, discovering rogue devices
+1. Enter a target in the sidebar — an IP address (`10.0.0.1`), CIDR range (`192.168.1.0/24`), or hostname (`example.com`).
+2. Set a port range — comma-separated (`22,80,443`) or a range (`1-1024`).
+3. Choose a scan profile.
 
-```
-✓ Discovers all active hosts
-✓ Port scans each device
-✓ Identifies vulnerable services
-✓ Maps network topology
-✓ Does NOT scan local system
-```
+| Profile | Behaviour |
+|---|---|
+| Quick | Fast service detection, low network impact |
+| Standard | Full version scan with service fingerprinting |
+| Aggressive | OS detection, scripts, maximum version intensity |
 
-**Checks performed:**
-- Host discovery (ping sweep)
-- Port scanning (22+ ports per host)
-- Service identification
-- Version detection
-- Exposed database checks
-- Insecure protocol detection
+4. Enable or disable the Cloud Config Audit and AI Analysis modules.
+5. Paste your Anthropic API key if AI Analysis is enabled.
+6. Click **LAUNCH SCAN**.
+
+Results appear across six tabs: Hosts / Ports, Vulnerabilities, Cloud Config, Attack Paths, AI Analysis, and Scan Log.
 
 ---
 
-### Mode 3: Full Scan (Recommended) 
+## Data sources
 
-**Best for:** Complete security audit, quarterly assessments
-
-```
-✓ Most comprehensive option
-✓ Combines Mode 1 + Mode 2
-✓ Complete security posture assessment
-✓ Takes longer but most thorough
-```
-
-**Checks performed:**
-- Everything from Mode 1
-- Everything from Mode 2
-- Network-wide risk assessment
-- Cross-host vulnerability correlation
-
-**Typical duration:** 5-15 minutes depending on network size
+| Module | Source | Network traffic |
+|---|---|---|
+| Port scan (nmap mode) | Live nmap probe | Active — sends packets to target |
+| Port scan (simulation mode) | Internal dataset | None |
+| CVE correlation | Embedded database | None |
+| NVD enrichment | NVD 2.0 REST API | HTTPS to nvd.nist.gov |
+| Cloud config audit | Simulated | None |
+| AI analysis | Anthropic API | HTTPS to api.anthropic.com |
 
 ---
 
-### Mode 4: Quick Scan 
+## Legal and ethical use
 
-**Best for:** Regular monitoring, quick security overview
+LACUNA is designed for use against systems you own or have explicit written permission to test. Running network scans against systems without authorisation is illegal in most jurisdictions regardless of intent.
 
-```
-✓ Essential checks only
-✓ Fast execution
-✓ Good for weekly/daily monitoring
-✓ Lightweight resource usage
-```
+The cloud configuration audit is simulated and does not connect to any cloud provider API. NVD enrichment queries only the public NVD 2.0 API for CVE metadata.
 
-**Checks performed:**
-- Critical vulnerabilities only
-- Open dangerous ports (Telnet, FTP)
-- Basic firewall check
-- Critical file permissions
+The authors accept no liability for misuse of this tool.
 
 ---
 
-## What Gets Scanned
+## Project structure
 
-### Local System Vulnerabilities
-
-<details>
-<summary><b>🔴 CRITICAL Severity Issues</b></summary>
-
-- Non-root users with UID 0 (root privileges)
-- SSH Protocol 1 enabled
-- SSH permits empty passwords
-- `/etc/shadow` world-readable
-- Telnet service running locally
-
-</details>
-
-<details>
-<summary><b>🟠 HIGH Severity Issues</b></summary>
-
-- Firewall disabled (UFW, iptables, Windows Firewall)
-- SSH root login enabled
-- RDP exposed to network (port 3389)
-- VNC server accessible (port 5900)
-- Weak minimum password length (<8 chars)
-- Insecure services running (FTP, RSH, Rlogin)
-- Windows Defender disabled
-
-</details>
-
-<details>
-<summary><b>🟡 MEDIUM Severity Issues</b></summary>
-
-- 10+ package updates available
-- Weak password expiration policy (>90 days)
-- SSH password authentication enabled
-- SMB exposed (EternalBlue risk)
-- Database exposed to network
-- No disk encryption
-- Multiple network shares configured
-- Vulnerable software installed
-
-</details>
-
-<details>
-<summary><b>🔵 LOW Severity Issues</b></summary>
-
-- No antivirus/security tools installed
-- Excessive user accounts (>15)
-- Samba/NFS configured
-- Information disclosure (server versions)
-
-</details>
-
-### Network Vulnerabilities Detected
-
-| Service/Port | Severity | Risk Description |
-|--------------|----------|------------------|
-| **Telnet (23)** | CRITICAL | Cleartext credential transmission |
-| **FTP (21)** | HIGH | Unencrypted file transfer |
-| **RDP (3389)** | HIGH | Remote Desktop brute-force target |
-| **VNC (5900)** | HIGH | Often weak/no authentication |
-| **SMB (445)** | MEDIUM | EternalBlue vulnerability risk |
-| **MySQL (3306)** | HIGH | Database exposed to network |
-| **MongoDB (27017)** | HIGH | NoSQL database often lacks auth |
-| **Redis (6379)** | HIGH | In-memory DB with weak defaults |
-| **PostgreSQL (5432)** | HIGH | Database network exposure |
+```
+lacuna/
+├── lacuna.py           # Main application — single-file Streamlit app
+├── requirements.txt    # Python packages for Streamlit Cloud
+├── packages.txt        # System packages for Streamlit Cloud (nmap binary)
+└── README.md           # This file
+```
 
 ---
+
+## Roadmap
+
+- Shodan API integration for passive external recon
+- Export scan results to PDF report
+- MITRE ATT&CK TTP tagging per CVE finding
+- Multi-host CIDR scan with aggregate risk dashboard
+- Persistent scan history with SQLite backend
+- Docker image for zero-install deployment
+
+---
+
+## Dependencies and licences
+
+| Package | Licence |
+|---|---|
+| Streamlit | Apache 2.0 |
+| python-nmap | GPL-3.0 |
+| requests | Apache 2.0 |
+| anthropic | MIT |
+| plotly | MIT |
+| networkx | BSD-3-Clause |
+| nmap (binary) | GPL-2.0 |
+
+---
+
+## Contributing
+
+Pull requests are welcome. For significant changes, open an issue first to discuss the proposed direction. Please ensure any new scan modules degrade gracefully when their dependencies are absent, consistent with the rest of the codebase.
+
+---
+
+## Author
+
+Built by Ricardo — security awareness engineer, threat intelligence practitioner, and builder of things that find things other things missed.
